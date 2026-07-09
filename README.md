@@ -212,6 +212,12 @@ Version matching is heuristic (the identifying column differs per data manager),
 so a request is considered present if its version, any `params` value, or any
 `depends_on` version matches a table entry.
 
+For **chained** requests this also avoids redundant upstream work: if the
+upstream database a request `depends_on` already exists in the data table, the
+generated workflow references that existing entry directly (a single downstream
+step) instead of rebuilding the upstream. If it does not exist, the upstream data
+manager is added as a step and built first.
+
 ### Adding a brand-new data manager
 
 To onboard a data manager that isn't used yet:
