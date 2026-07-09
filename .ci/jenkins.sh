@@ -6,6 +6,9 @@ set -euo pipefail
 
 BUILD_GALAXY_URL="http://idc-build"
 PUBLISH_GALAXY_URL="https://usegalaxy.org"
+# Galaxy where the IDC reference-data (workflow-bundle) builds run - Stage 2
+# (.github/workflows/build.yml) builds bundles here for Stage 3 to import.
+REFERENCE_DATA_GALAXY_URL="https://test.galaxyproject.org"
 SSH_MASTER_SOCKET_DIR="${HOME}/.cache/idc"
 MAIN_BRANCH='main'
 
@@ -595,6 +598,42 @@ function import_tool_data_bundles() {
 }
 
 
+# ---------------------------------------------------------------------------
+# IDC reference-data (workflow-bundle) pipeline - Stage 3 import.
+# NOTE: UNTESTED against live Jenkins/Stratum 0 - review before enabling.
+# These import bundles built on $REFERENCE_DATA_GALAXY_URL by the Stage 2 build
+# (.github/workflows/build.yml) for requests under data-managers/. Only the
+# remote (non-docker) path is wired here; the USE_DOCKER/local-overlay path
+# would need the container invocation like import_tool_data_bundles.
+# ---------------------------------------------------------------------------
+
+function has_reference_data_requests() {
+    compgen -G "data-managers/*/*.yaml" >/dev/null 2>&1 || compgen -G "data-managers/*/*.yml" >/dev/null 2>&1
+}
+
+
+function import_reference_data_bundles() {
+    local req dm version
+    log "Importing IDC reference-data bundles"
+    copy_to scripts/get_bundle_urls.py
+    copy_to scripts/import_bundles.py
+    for req in data-managers/*/*.yaml data-managers/*/*.yml; do
+        [ -e "$req" ] || continue
+        dm="$(basename "$(dirname "$req")")"
+        version="$(basename "$req")"; version="${version%.*}"
+        log "Importing reference-data bundles for '${dm}/${version}'"
+        exec_on mkdir -p "/cvmfs/${REPO}/data" "/cvmfs/${REPO}/record/${dm}"
+        # import_bundles.py resolves the build's bundles from its workflow
+        # invocation (history idc-<dm>-<version>) and imports each, recording
+        # record/<dm>/<version> for idempotency. API key filtered by Jenkins.
+        exec_on "EPHEMERIS_API_KEY='$EPHEMERIS_API_KEY' TMPDIR='${REMOTE_WORKDIR}' ${EPHEMERIS_BIN}/python3 ${REMOTE_WORKDIR}/import_bundles.py \
+            --galaxy-url '$REFERENCE_DATA_GALAXY_URL' --history-name 'idc-${dm}-${version}' \
+            --dm '$dm' --version '$version' --cvmfs-root '/cvmfs/${REPO}' \
+            --import-cmd '${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle'"
+    done
+}
+
+
 function show_logs() {
     local lines=
     if [ -n "${1:-}" ]; then
@@ -684,11 +723,16 @@ function do_import_remote() {
     create_remote_workdir
     setup_remote_ephemeris
     # from this point forward $EPHEMERIS_BIN refers to remote
-    if generate_import_tasks; then
+    local have_genome_tasks=false have_reference_data=false
+    generate_import_tasks && have_genome_tasks=true
+    # UNTESTED: also open a transaction when only reference-data requests exist
+    has_reference_data_requests && have_reference_data=true
+    if $have_genome_tasks || $have_reference_data; then
         setup_galaxy_maintenance_scripts "$WORKDIR" "$REMOTE_PYTHON"
         begin_transaction
         update_tool_data_table_conf
-        import_tool_data_bundles
+        $have_genome_tasks && import_tool_data_bundles
+        $have_reference_data && import_reference_data_bundles
         check_for_repo_changes
         post_install
     else
