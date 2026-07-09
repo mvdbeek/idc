@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 import generate_build as gb  # noqa: E402
 import get_bundle_urls as gburls  # noqa: E402
 import import_bundles as imp  # noqa: E402
+import pending_requests as pr  # noqa: E402
 import request_models as rm  # noqa: E402
 
 SEEDS = {
@@ -152,6 +153,68 @@ def test_import_command_assembly():
         "/cvmfs/idc.galaxyproject.org/config/tool_data_table_conf.xml",
         "http://u/bundle",
     ]
+
+
+def test_pending_requests_filters_published():
+    paths = list(SEEDS.values())
+    published = {"motus_db_versioned": ["3.1.0"]}
+    remaining = pr.pending(paths, published)
+    names = {p.parent.name for p in remaining}
+    assert "motus_db_versioned" not in names  # already published -> filtered out
+    assert {"metaphlan_database_versioned", "samestr_db"} <= names
+
+
+class _FakeGi:
+    """Minimal stand-in for a bioblend GalaxyInstance for history resolution."""
+
+    def __init__(self, invocations, invocation_detail, datasets=None):
+        self._invocations = invocations
+        self._invocation_detail = invocation_detail
+        self._datasets = datasets or []
+
+        outer = self
+
+        class _Histories:
+            def get_histories(self, name, deleted=False):
+                return [{"id": "hist1", "name": name}]
+
+        class _Invocations:
+            def get_invocations(self, history_id):
+                return outer._invocations
+
+            def show_invocation(self, invocation_id):
+                return outer._invocation_detail
+
+        class _Datasets:
+            def get_datasets(self, history_id, extension, order):
+                return outer._datasets
+
+        self.histories = _Histories()
+        self.invocations = _Invocations()
+        self.datasets = _Datasets()
+
+
+def test_history_resolution_prefers_latest_invocation():
+    gi = _FakeGi(
+        invocations=[
+            {"id": "old", "create_time": "2026-01-01T00:00:00"},
+            {"id": "new", "create_time": "2026-02-01T00:00:00"},
+        ],
+        invocation_detail=CHAIN_INV,  # named *_bundle outputs
+    )
+    result = gburls.bundles_from_history(gi, "idc-samestr_db-v1")
+    # precise: exactly the two bundle outputs, not a dataset scan
+    assert result == {"metaphlan_database_versioned_bundle": "dsMETA", "samestr_db_bundle": "dsSAM"}
+
+
+def test_history_resolution_falls_back_to_dataset_scan_without_invocation():
+    gi = _FakeGi(
+        invocations=[],
+        invocation_detail={},
+        datasets=[{"id": "d0"}, {"id": "d1"}],
+    )
+    result = gburls.bundles_from_history(gi, "idc-motus_db_versioned-3.1.0")
+    assert list(result.values()) == ["d0", "d1"]
 
 
 def test_import_dry_run_and_idempotency(tmp_path, capsys):

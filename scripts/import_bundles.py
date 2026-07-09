@@ -27,6 +27,7 @@ from get_bundle_urls import (  # noqa: E402
     DEFAULT_BUNDLE_SUFFIX,
     bundle_dataset_ids_from_invocation,
     bundle_url,
+    bundles_from_history,
 )
 
 
@@ -46,19 +47,29 @@ def record_marker(cvmfs_root: str, dm: str, version: str) -> Path:
     return Path(cvmfs_root) / "record" / dm / version
 
 
-def _load_invocation(args) -> dict:
-    if args.invocation_json:
-        import json
-
-        with open(args.invocation_json) as fh:
-            return json.load(fh)
+def _galaxy_connection(args):
     from bioblend.galaxy import GalaxyInstance
 
     api_key = args.galaxy_api_key or os.environ.get("EPHEMERIS_API_KEY")
     if not api_key:
         raise SystemExit("No Galaxy API key (use --galaxy-api-key or set $EPHEMERIS_API_KEY)")
-    gi = GalaxyInstance(url=args.galaxy_url, key=api_key)
-    return gi.invocations.show_invocation(args.invocation_id)
+    return GalaxyInstance(url=args.galaxy_url, key=api_key)
+
+
+def resolve_bundles(args) -> dict[str, str]:
+    """Map bundle label -> dataset id, from whichever source was given."""
+    if args.invocation_json:
+        import json
+
+        with open(args.invocation_json) as fh:
+            invocation = json.load(fh)
+        return bundle_dataset_ids_from_invocation(invocation, suffix=args.bundle_suffix)
+    if args.invocation_id:
+        gi = _galaxy_connection(args)
+        invocation = gi.invocations.show_invocation(args.invocation_id)
+        return bundle_dataset_ids_from_invocation(invocation, suffix=args.bundle_suffix)
+    # history-name fallback (the stable key shared by the build and import stages)
+    return bundles_from_history(_galaxy_connection(args), args.history_name)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -68,6 +79,7 @@ def _parser() -> argparse.ArgumentParser:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--invocation-json", help="Path to a saved invocation dict (offline)")
     source.add_argument("--invocation-id", help="Workflow invocation id to fetch from Galaxy")
+    source.add_argument("--history-name", help="History to scan for data_manager_json bundles")
     parser.add_argument("--dm", required=True, help="Data manager name (record identity)")
     parser.add_argument("--version", required=True, help="Version being imported (record identity)")
     parser.add_argument("--cvmfs-root", default="/cvmfs/idc.galaxyproject.org", help="CVMFS repo root")
@@ -90,8 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Already imported: {args.dm}/{args.version} (record {marker} exists); skipping")
         return 0
 
-    invocation = _load_invocation(args)
-    bundles = bundle_dataset_ids_from_invocation(invocation, suffix=args.bundle_suffix)
+    bundles = resolve_bundles(args)
     if not bundles:
         raise SystemExit("No bundle datasets found for this build")
 

@@ -59,6 +59,30 @@ def bundle_dataset_ids_from_invocation(
     return result
 
 
+def bundles_from_history(gi, history_name: str, suffix: str = DEFAULT_BUNDLE_SUFFIX) -> dict[str, str]:
+    """Resolve a build's bundles from its history name (the stable key shared by
+    the build and import stages).
+
+    Prefers the workflow **invocation** in that history: its named ``*_bundle``
+    outputs are exactly the bundles this build produced, so this is precise even
+    if the history also holds a re-run or a failed job's output. Falls back to
+    scanning ``data_manager_json`` datasets only if the history has no invocation.
+    """
+    histories = gi.histories.get_histories(name=history_name, deleted=False)
+    if not histories:
+        raise SystemExit(f"No history named {history_name!r}")
+    history_id = histories[0]["id"]
+
+    invocations = gi.invocations.get_invocations(history_id=history_id)
+    if invocations:
+        latest = sorted(invocations, key=lambda i: i.get("create_time", ""))[-1]
+        invocation = gi.invocations.show_invocation(latest["id"])
+        return bundle_dataset_ids_from_invocation(invocation, suffix=suffix)
+
+    datasets = gi.datasets.get_datasets(history_id=history_id, extension=EXT, order="create_time-asc")
+    return {f"{history_name}_{i}": d["id"] for i, d in enumerate(datasets)}
+
+
 def _galaxy_connection(args):
     from bioblend.galaxy import GalaxyInstance
 
@@ -82,15 +106,7 @@ def _load_invocation(args) -> dict:
 
 def _bundles_from_history(args) -> dict[str, str]:
     """Fallback: every data_manager_json dataset in a named history, in order."""
-    gi = _galaxy_connection(args)
-    histories = gi.histories.get_histories(name=args.history_name, deleted=False)
-    if not histories:
-        raise SystemExit(f"No history named {args.history_name!r}")
-    history_id = histories[0]["id"]
-    datasets = gi.datasets.get_datasets(
-        history_id=history_id, extension=EXT, order="create_time-asc"
-    )
-    return {f"{args.history_name}_{i}": d["id"] for i, d in enumerate(datasets)}
+    return bundles_from_history(_galaxy_connection(args), args.history_name)
 
 
 def _parser() -> argparse.ArgumentParser:

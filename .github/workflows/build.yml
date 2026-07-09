@@ -1,0 +1,86 @@
+name: Build reference-data bundles
+
+# Stage 2 of the IDC reference-data pipeline: when a request is merged to main,
+# generate its data-manager-bundle workflow and run it on test.galaxyproject.org
+# (via planemo). The build runs asynchronously (--no_wait); the resulting bundle
+# datasets live in a history named idc-<dm>-<version>, which Stage 3 (Jenkins)
+# later imports onto CVMFS.
+#
+# Requires the repository secret TEST_API_KEY (a test.galaxyproject.org API key).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "data-managers/**"
+  workflow_dispatch:
+    inputs:
+      request:
+        description: "Specific request file to build (default: all requests changed in the push)"
+        required: false
+        default: ""
+
+concurrency:
+  group: idc-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # need the previous commit to diff changed requests
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install planemo "pydantic>=2" pyyaml gxformat2
+
+      - name: Select requests to build
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.request }}" ]; then
+            printf '%s\n' "${{ github.event.inputs.request }}" > candidates.txt
+          else
+            base="${{ github.event.before }}"
+            # branch-creation / unknown base reports an all-zero SHA; use previous commit
+            if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              base="HEAD~1"
+            fi
+            git diff --name-only --diff-filter=AM "$base" "${{ github.sha }}" \
+              -- 'data-managers/*/*.yml' 'data-managers/*/*.yaml' > candidates.txt || true
+          fi
+          # keep only requests whose version is not already published
+          python scripts/pending_requests.py --from-file candidates.txt > requests.txt
+          echo "Requests to build:"; cat requests.txt || true
+
+      - name: Build bundles on test.galaxyproject.org
+        env:
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ ! -s requests.txt ]; then echo "Nothing to build."; exit 0; fi
+          while read -r req; do
+            [ -n "$req" ] || continue
+            dm=$(basename "$(dirname "$req")")
+            version=$(basename "$req"); version="${version%.*}"
+            echo "::group::Building ${dm}/${version}"
+            python scripts/generate_build.py "$req" --outdir build
+            b="build/${dm}/${version}"
+            planemo run "$b/workflow.gxwf.yml" "$b/job.yml" \
+              --galaxy_url https://test.galaxyproject.org \
+              --galaxy_user_key "$TEST_API_KEY" \
+              --history_name "idc-${dm}-${version}" \
+              --tags idc --no_wait \
+              --output_json "$b/invocation.json"
+            echo "::endgroup::"
+          done < requests.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: idc-build
+          path: build/
+          if-no-files-found: ignore
