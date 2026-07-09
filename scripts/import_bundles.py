@@ -104,7 +104,10 @@ def main(argv: list[str] | None = None) -> int:
 
     bundles = resolve_bundles(args)
     if not bundles:
-        raise SystemExit("No bundle datasets found for this build")
+        # Nothing to import - no build history/invocation (e.g. the build was
+        # skipped because the data already exists). Not an error.
+        print(f"No bundles to import for {args.dm}/{args.version}; skipping")
+        return 0
 
     for label, dataset_id in bundles.items():
         url = bundle_url(args.galaxy_url, dataset_id)

@@ -192,7 +192,25 @@ description: SameStr marker database derived from MetaPhlAn mpa_vJan21
 3. **Import** (Jenkins): the bundle(s) are resolved from the build's workflow
    invocation and imported onto CVMFS with `galaxy-import-data-bundle`
    (`.ci/import_reference_data.sh` / `.ci/jenkins.sh`), recording
-   `record/<data_manager>/<version>` and updating `published.yml`.
+   `record/<data_manager>/<version>` for idempotency.
+
+### Avoiding rebuilds of existing data ("does this already exist?")
+
+Reference data that a Galaxy already has is never rebuilt or re-imported. The
+authoritative check is the target Galaxy's tool data table:
+`GET /api/tool_data/<table>` (public, no key) lists what is actually available
+there — from *any* source, including the byhand `data.galaxyproject.org` CVMFS —
+so we don't duplicate data that already exists. `scripts/check_data_exists.py`
+performs this check and is used at three points:
+
+- **Lint** (informational): warns on the PR if a request's data already exists.
+- **Build** (`build.yml`): skips building requests whose data already exists.
+- **Import**: `import_bundles.py` skips gracefully when there is no build history
+  for a request (which is the case when the build skipped it).
+
+Version matching is heuristic (the identifying column differs per data manager),
+so a request is considered present if its version, any `params` value, or any
+`depends_on` version matches a table entry.
 
 ### Adding a brand-new data manager
 

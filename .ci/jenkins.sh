@@ -621,6 +621,9 @@ function import_reference_data_bundles() {
         [ -e "$req" ] || continue
         dm="$(basename "$(dirname "$req")")"
         version="$(basename "$req")"; version="${version%.*}"
+        # import_bundles.py skips gracefully when there is no build history
+        # idc-<dm>-<version> - which is the case when the build stage skipped this
+        # request because its data already exists.
         log "Importing reference-data bundles for '${dm}/${version}'"
         exec_on mkdir -p "/cvmfs/${REPO}/data" "/cvmfs/${REPO}/record/${dm}"
         # import_bundles.py resolves the build's bundles from its workflow

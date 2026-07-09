@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import check_data_exists as cde  # noqa: E402
 import generate_build as gb  # noqa: E402
 import get_bundle_urls as gburls  # noqa: E402
 import import_bundles as imp  # noqa: E402
@@ -164,6 +165,43 @@ def test_pending_requests_filters_published():
     assert {"metaphlan_database_versioned", "samestr_db"} <= names
 
 
+# --------------------------------------------------------------------------- #
+# check_data_exists
+# --------------------------------------------------------------------------- #
+_META_TABLE = {
+    "columns": ["value", "name", "dbkey", "path", "db_version"],
+    "fields": [["mpa_vJan21_CHOCOPhlAnSGB_202103-04042023", "n", "mpa_vJan21_CHOCOPhlAnSGB_202103", "/p", "SGB"]],
+}
+_MOTUS_TABLE = {"columns": ["value", "version", "name", "path"], "fields": [["3.1.0", "3.1.0", "n", "/p"]]}
+
+
+def test_entry_exists_matches_exact_field_and_value_prefix():
+    assert cde.entry_exists(_META_TABLE, {"mpa_vJan21_CHOCOPhlAnSGB_202103"})  # dbkey exact + value prefix
+    assert not cde.entry_exists(_META_TABLE, {"mpa_vOct22_CHOCOPhlAnSGB_202212"})
+    assert cde.entry_exists(_MOTUS_TABLE, {"3.1.0"})  # value exact
+    assert not cde.entry_exists(_MOTUS_TABLE, {"3.0.0"})
+    assert not cde.entry_exists({"fields": []}, {"anything"})
+
+
+def test_identity_strings_include_params_and_depends_on():
+    req = rm.Request(
+        tool_id="toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1",
+        data_tables=["samestr_db"],
+        params={},
+        depends_on={"metaphlan_database_versioned": "mpa_vJan21_CHOCOPhlAnSGB_202103"},
+    )
+    ids = cde.identity_strings(req, "marker_db_mpa_vJan21")
+    assert "marker_db_mpa_vJan21" in ids and "mpa_vJan21_CHOCOPhlAnSGB_202103" in ids
+
+
+def test_request_exists_uses_table_lookup(monkeypatch):
+    req = gb.load_request(SEEDS["metaphlan"])[0]
+    monkeypatch.setattr(cde, "fetch_table", lambda url, table: _META_TABLE)
+    assert cde.request_exists(req, "mpa_vJan21_CHOCOPhlAnSGB_202103", "http://g")
+    monkeypatch.setattr(cde, "fetch_table", lambda url, table: {"fields": []})
+    assert not cde.request_exists(req, "mpa_vJan21_CHOCOPhlAnSGB_202103", "http://g")
+
+
 class _FakeGi:
     """Minimal stand-in for a bioblend GalaxyInstance for history resolution."""
 
@@ -205,6 +243,28 @@ def test_history_resolution_prefers_latest_invocation():
     result = gburls.bundles_from_history(gi, "idc-samestr_db-v1")
     # precise: exactly the two bundle outputs, not a dataset scan
     assert result == {"metaphlan_database_versioned_bundle": "dsMETA", "samestr_db_bundle": "dsSAM"}
+
+
+def test_history_resolution_returns_empty_when_history_missing():
+    class _NoHistory:
+        class histories:
+            @staticmethod
+            def get_histories(name, deleted=False):
+                return []
+
+    assert gburls.bundles_from_history(_NoHistory(), "idc-missing-1") == {}
+
+
+def test_import_skips_gracefully_when_no_bundles(tmp_path, capsys):
+    inv = tmp_path / "inv.json"
+    inv.write_text('{"outputs": {}}')  # invocation with no bundle outputs
+    rc = imp.main([
+        "--invocation-json", str(inv),
+        "--dm", "motus_db_versioned", "--version", "3.1.0",
+        "--cvmfs-root", str(tmp_path),
+    ])
+    assert rc == 0
+    assert "skipping" in capsys.readouterr().out
 
 
 def test_history_resolution_falls_back_to_dataset_scan_without_invocation():

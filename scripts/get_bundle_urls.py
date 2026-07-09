@@ -70,7 +70,9 @@ def bundles_from_history(gi, history_name: str, suffix: str = DEFAULT_BUNDLE_SUF
     """
     histories = gi.histories.get_histories(name=history_name, deleted=False)
     if not histories:
-        raise SystemExit(f"No history named {history_name!r}")
+        # No build history - e.g. the build was skipped because the data already
+        # exists. Return nothing so callers can skip gracefully.
+        return {}
     history_id = histories[0]["id"]
 
     invocations = gi.invocations.get_invocations(history_id=history_id)

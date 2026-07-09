@@ -40,3 +40,9 @@ jobs:
         run: python scripts/generate_build.py --all --outdir "${RUNNER_TEMP}/idc-build-check"
       - name: Run pipeline unit tests
         run: python -m pytest tests/ -q
+      - name: Check whether requested data already exists
+        # Informational (non-blocking): query the tool data tables on
+        # test.galaxyproject.org (public, no key) and warn if a request's data is
+        # already available there from any source (e.g. the byhand CVMFS). The
+        # build stage skips these; here we just surface it to reviewers.
+        run: python scripts/check_data_exists.py --all --warn

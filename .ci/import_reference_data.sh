@@ -35,6 +35,13 @@ for req in "$REPO_DIR"/data-managers/*/*.yml "$REPO_DIR"/data-managers/*/*.yaml;
     dm="$(basename "$(dirname "$req")")"
     version="$(basename "$req")"; version="${version%.*}"
     echo "== reference data: ${dm}/${version} =="
+    # Skip data that already exists in the Galaxy data table (the build stage
+    # skips it too, so there is no history to import). --print-new emits the
+    # request only if its data is not present.
+    if [ -z "$("$PYTHON" "$REPO_DIR/scripts/check_data_exists.py" "$req" --print-new --reference-galaxy "$GALAXY_URL")" ]; then
+        echo "   already exists on $GALAXY_URL; skipping"
+        continue
+    fi
     "$PYTHON" "$REPO_DIR/scripts/import_bundles.py" \
         --galaxy-url "$GALAXY_URL" \
         --history-name "idc-${dm}-${version}" \
