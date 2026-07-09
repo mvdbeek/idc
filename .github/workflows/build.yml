@@ -72,7 +72,10 @@ jobs:
             dm=$(basename "$(dirname "$req")")
             version=$(basename "$req"); version="${version%.*}"
             echo "::group::Building ${dm}/${version}"
-            python scripts/generate_build.py "$req" --outdir build
+            # --reference-galaxy: if a chained request's upstream database already
+            # exists on the Galaxy, reference it instead of rebuilding it.
+            python scripts/generate_build.py "$req" --outdir build \
+              --reference-galaxy https://test.galaxyproject.org
             b="build/${dm}/${version}"
             planemo run "$b/workflow.gxwf.yml" "$b/job.yml" \
               --galaxy_url https://test.galaxyproject.org \

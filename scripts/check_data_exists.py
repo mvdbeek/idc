@@ -54,14 +54,32 @@ def identity_strings(request: Request, version: str) -> set[str]:
     return {c for c in candidates if c}
 
 
-def entry_exists(table_data: dict, candidates: set[str]) -> bool:
+def matching_value(table_data: dict, candidates: set[str]) -> str | None:
+    """The ``value`` column of the first row matching any candidate, else None."""
     for row in table_data.get("fields", []):
         row_strings = [str(x) for x in row]
         value = row_strings[0] if row_strings else ""
         for candidate in candidates:
             if candidate in row_strings or value == candidate or value.startswith(candidate + "-"):
-                return True
-    return False
+                return value
+    return None
+
+
+def entry_exists(table_data: dict, candidates: set[str]) -> bool:
+    return matching_value(table_data, candidates) is not None
+
+
+def resolve_existing_value(galaxy_url: str, table: str, version: str) -> str | None:
+    """The data-table ``value`` for an existing entry of ``version``, else None.
+
+    Used to reference an already-built upstream database (e.g. a MetaPhlAn DB a
+    SameStr build depends on) instead of rebuilding it.
+    """
+    try:
+        table_data = fetch_table(galaxy_url, table)
+    except Exception:
+        return None
+    return matching_value(table_data, {version})
 
 
 def request_exists(request: Request, version: str, galaxy_url: str) -> bool:

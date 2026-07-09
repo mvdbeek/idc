@@ -86,6 +86,22 @@ def test_chained_build_wires_upstream_bundle():
     gb.validate_workflow(workflow)
 
 
+def test_chained_build_references_existing_upstream(monkeypatch):
+    # When the upstream metaphlan already exists, reference it instead of rebuilding.
+    monkeypatch.setattr(cde, "resolve_existing_value", lambda url, table, version: "mpa_vJan21_CHOCOPhlAnSGB_202103-04042023")
+    request, dm, version = gb.load_request(SEEDS["samestr"])
+    workflow, job = gb.build(request, dm, version, reference_galaxy="https://test.galaxyproject.org")
+    # single step (samestr only) - no metaphlan build step
+    assert list(workflow["steps"]) == ["samestr_db"]
+    samestr = workflow["steps"]["samestr_db"]
+    assert samestr["tool_state"]["db_source"]["db_type"] == "metaphlan"
+    # database wired from a workflow input carrying the existing table value
+    assert samestr["in"]["db_source|database"]["source"] == "db_source_database"
+    assert job["db_source_database"] == "mpa_vJan21_CHOCOPhlAnSGB_202103-04042023"
+    assert set(workflow["outputs"]) == {"samestr_db_bundle"}
+    gb.validate_workflow(workflow)
+
+
 def test_validate_rejects_broken_connection():
     workflow = {
         "class": "GalaxyWorkflow",

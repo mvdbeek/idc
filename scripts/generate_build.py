@@ -150,16 +150,21 @@ def _resolve_request_path(dm: str, version: str) -> Path:
     )
 
 
-def build(request: Request, dm: str, version: str) -> tuple[dict, dict]:
-    """Return (gxformat2 workflow dict, planemo job dict) for one request."""
+def build(request: Request, dm: str, version: str, reference_galaxy: str | None = None) -> tuple[dict, dict]:
+    """Return (gxformat2 workflow dict, planemo job dict) for one request.
+
+    For a chained request (``depends_on``): if ``reference_galaxy`` is given and
+    the upstream database already exists in that Galaxy's data table, the existing
+    entry is referenced directly (no upstream build step). Otherwise the upstream
+    data manager is added as a step and rebuilt.
+    """
+    from check_data_exists import resolve_existing_value
+
     wb = WorkflowBuilder()
 
     connections: dict = {}
     baked_state: dict = {}
     for up_table, up_version in (request.depends_on or {}).items():
-        up_request, up_dm, _ = load_request(_resolve_request_path(up_table, up_version))
-        wb.add_step(up_dm, up_request.tool_id, up_request.params, input_prefix=f"{up_dm}_")
-
         wiring = CHAIN_WIRING.get((dm, up_table))
         if wiring is None:
             raise SystemExit(
@@ -167,7 +172,21 @@ def build(request: Request, dm: str, version: str) -> tuple[dict, dict]:
                 f"Add an entry to CHAIN_WIRING in scripts/generate_build.py."
             )
         baked_state = deep_merge(baked_state, wiring["tool_state"])
-        connections[wiring["connect_param"]] = f"{up_dm}/{OUT_FILE}"
+
+        existing_value = (
+            resolve_existing_value(reference_galaxy, up_table, up_version) if reference_galaxy else None
+        )
+        if existing_value is not None:
+            # Reference the already-built upstream entry via a workflow input.
+            input_name = wiring["connect_param"].replace("|", "_")
+            wb.inputs[input_name] = {"type": "string"}
+            wb.job[input_name] = existing_value
+            connections[wiring["connect_param"]] = input_name
+        else:
+            # Rebuild the upstream data manager as a step and wire its bundle.
+            up_request, up_dm, _ = load_request(_resolve_request_path(up_table, up_version))
+            wb.add_step(up_dm, up_request.tool_id, up_request.params, input_prefix=f"{up_dm}_")
+            connections[wiring["connect_param"]] = f"{up_dm}/{OUT_FILE}"
 
     wb.add_step(
         dm,
@@ -217,8 +236,15 @@ def validate_workflow(workflow: dict) -> None:
         raise ValueError(f"gxformat2 lint reported errors: {messages}")
 
 
-def write_build(request: Request, dm: str, version: str, outdir: Path, validate: bool = True) -> Path:
-    workflow, job = build(request, dm, version)
+def write_build(
+    request: Request,
+    dm: str,
+    version: str,
+    outdir: Path,
+    validate: bool = True,
+    reference_galaxy: str | None = None,
+) -> Path:
+    workflow, job = build(request, dm, version, reference_galaxy=reference_galaxy)
     if validate:
         validate_workflow(workflow)
     build_dir = outdir / dm / version
@@ -249,6 +275,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="Skip gxformat2 validation of the generated workflow",
     )
+    parser.add_argument(
+        "--reference-galaxy",
+        default=None,
+        help=(
+            "If a chained request's upstream database already exists in this "
+            "Galaxy's data table, reference it instead of rebuilding it."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.all:
@@ -261,7 +295,9 @@ def main(argv: list[str] | None = None) -> int:
     outdir = Path(args.outdir)
     for path in request_paths:
         request, dm, version = load_request(path)
-        wf_path = write_build(request, dm, version, outdir, validate=args.validate)
+        wf_path = write_build(
+            request, dm, version, outdir, validate=args.validate, reference_galaxy=args.reference_galaxy
+        )
         job_path = wf_path.parent / "job.yml"
         history = f"idc-{dm}-{version}"
         print(f"# {dm} {version}")
