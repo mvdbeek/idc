@@ -9,8 +9,8 @@ on:
     paths:
       - "data-managers/**"
       - "published.yml"
-      - "scripts/request_models.py"
-      - "scripts/generate_build.py"
+      - "scripts/**"
+      - "tests/**"
       - ".github/workflows/lint.yml"
   push:
     branches:
@@ -18,8 +18,8 @@ on:
     paths:
       - "data-managers/**"
       - "published.yml"
-      - "scripts/request_models.py"
-      - "scripts/generate_build.py"
+      - "scripts/**"
+      - "tests/**"
 
 jobs:
   lint:
@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install "pydantic>=2" pyyaml gxformat2
+        run: pip install "pydantic>=2" pyyaml gxformat2 pytest
       - name: Lint request files
         run: python scripts/request_models.py
       - name: Validate generated build workflows
@@ -38,3 +38,5 @@ jobs:
         # with gxformat2 (strict schema, format2->native, semantic lint). Catches
         # wiring errors - e.g. a chained request with no CHAIN_WIRING entry.
         run: python scripts/generate_build.py --all --outdir "${RUNNER_TEMP}/idc-build-check"
+      - name: Run pipeline unit tests
+        run: python -m pytest tests/ -q
