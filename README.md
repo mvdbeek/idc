@@ -123,6 +123,99 @@ genomes:
       - bfast
 ```
 
+## Contributing versioned reference data (workflow bundles)
+
+Beyond the genome-indexing pipeline above (`genomes.yml` + `data_managers.yml`),
+the IDC supports **versioned reference databases** built by data managers — e.g.
+`metaphlan_database_versioned`, `motus_db_versioned`, `samestr_db`. Each requested
+version is built by running a Galaxy **data-manager-bundle workflow** on
+[test.galaxyproject.org](https://test.galaxyproject.org), and the resulting
+bundle is imported onto CVMFS by Jenkins.
+
+### How to request a new reference-data version
+
+Open a PR that adds a single YAML file at:
+
+```
+data-managers/<data_manager>/<version>.yaml
+```
+
+- `<data_manager>` is the name of the data manager's primary **data table**
+  (e.g. `motus_db_versioned`). It must be one of the file's `data_tables`.
+- `<version>` (the file name, without extension) is the version identity used for
+  the build history and for idempotency — it must be unique per data manager.
+
+**Standalone request** (a self-contained download/build), e.g.
+`data-managers/motus_db_versioned/3.1.0.yaml`:
+
+```yaml
+# Full, version-pinned Tool Shed GUID of the data manager tool (required).
+tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy0
+# Data table(s) the data manager populates (required).
+data_tables: [motus_db_versioned]
+# Tool parameters for this build. Each becomes a workflow input (use "|" for
+# nested/conditional params, e.g. "db|build").
+params:
+  version: "3.1.0"
+# Optional, human-facing provenance:
+description: mOTUs profiler database, version 3.1.0
+doi:
+checksum:
+```
+
+**Chained request** (a data manager that builds from another database), e.g.
+`data-managers/samestr_db/marker_db_mpa_vJan21.yaml` — SameStr builds from a
+MetaPhlAn database:
+
+```yaml
+tool_id: toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy1
+data_tables: [samestr_db]
+# The upstream table -> version this build depends on. A request file must exist
+# at data-managers/metaphlan_database_versioned/<version>.yaml so it is built
+# first; its bundle is wired into this data manager's input.
+depends_on:
+  metaphlan_database_versioned: mpa_vJan21_CHOCOPhlAnSGB_202103
+params: {}
+description: SameStr marker database derived from MetaPhlAn mpa_vJan21
+```
+
+### What happens to your PR
+
+1. **Lint** (GitHub Actions, on the PR): `scripts/request_models.py` validates the
+   request (version-pinned GUID, folder/table match, `depends_on` resolves, not
+   already in `published.yml`) and gxformat2-validates the workflow it generates.
+2. **Build** (GitHub Actions, on merge to `main`): `scripts/generate_build.py`
+   turns the request into a gxformat2 data-manager-bundle workflow, and
+   `planemo run` executes it on test.galaxyproject.org into a history named
+   `idc-<data_manager>-<version>`. Each data manager runs in
+   `__data_manager_mode: bundle`, producing a downloadable bundle dataset.
+3. **Import** (Jenkins): the bundle(s) are resolved from the build's workflow
+   invocation and imported onto CVMFS with `galaxy-import-data-bundle`
+   (`.ci/import_reference_data.sh` / `.ci/jenkins.sh`), recording
+   `record/<data_manager>/<version>` and updating `published.yml`.
+
+### Adding a brand-new data manager
+
+To onboard a data manager that isn't used yet:
+
+1. Get the tool installed on test.galaxyproject.org by adding it to
+   [usegalaxy-tools](https://github.com/galaxyproject/usegalaxy-tools)
+   (`test.galaxyproject.org/data_managers.yml`).
+2. Add its data table(s) to `config/tool_data_table_conf.xml` (columns must match
+   the data manager's `<data_tables>` definition).
+3. If it builds from another database, add a wiring entry to `CHAIN_WIRING` in
+   `scripts/generate_build.py` describing the conditional selector and the input
+   parameter that receives the upstream bundle.
+
+### Testing locally
+
+```bash
+pip install "pydantic>=2" pyyaml gxformat2 pytest
+python scripts/request_models.py                 # lint all requests
+python scripts/generate_build.py --all --outdir build   # generate + gxformat2-validate
+pytest tests/                                    # pipeline unit tests
+```
+
 ## Testing
 
 This repo can be tested using a machine with Docker installed and by a user with Docker privledges. As a warning however, some of the genomes will take a LOT (>64GB) of RAM to index.
