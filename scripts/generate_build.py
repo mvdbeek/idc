@@ -29,6 +29,7 @@ For each request it writes ``<outdir>/<dm>/<version>/workflow.gxwf.yml`` and
 ``job.yml`` and prints the planemo command to run it.
 """
 import argparse
+import copy
 import sys
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from request_models import (  # noqa: E402
     DATA_MANAGERS_DIR,
     Request,
     data_manager_name,
+    iter_request_files,
     version_id,
 )
 
@@ -87,6 +89,7 @@ class WorkflowBuilder:
     def __init__(self) -> None:
         self.steps: dict = {}
         self.inputs: dict = {}
+        self.outputs: dict = {}
         self.job: dict = {}
 
     def add_step(
@@ -122,12 +125,16 @@ class WorkflowBuilder:
         if in_map:
             step["in"] = in_map
         self.steps[step_key] = step
+        # Expose this data manager's bundle as a named workflow output, so the
+        # invocation surfaces the bundle dataset directly (consumed in Stage 3).
+        self.outputs[f"{step_key}_bundle"] = {"outputSource": f"{step_key}/{OUT_FILE}"}
 
     def workflow(self, label: str) -> dict:
         return {
             "class": "GalaxyWorkflow",
             "label": label,
             "inputs": self.inputs,
+            "outputs": self.outputs,
             "steps": self.steps,
         }
 
@@ -172,8 +179,48 @@ def build(request: Request, dm: str, version: str) -> tuple[dict, dict]:
     return wb.workflow(f"IDC bundle: {dm} {version}"), wb.job
 
 
-def write_build(request: Request, dm: str, version: str, outdir: Path) -> Path:
+def validate_workflow(workflow: dict) -> None:
+    """Validate a generated gxformat2 workflow with gxformat2 itself.
+
+    Runs three checks and raises ValueError on the first failure:
+      1. strict schema validation (Format2StrictModel),
+      2. format2 -> native conversion (structural / connection sanity),
+      3. the core gxformat2 semantic linter.
+    """
+    try:
+        from gxformat2 import python_to_workflow
+        from gxformat2.lint import (
+            Format2StrictModel,
+            LintContext,
+            lint_format2,
+        )
+    except ImportError as exc:  # pragma: no cover - depends on environment
+        raise ValueError(
+            "gxformat2 is required to validate generated workflows; install it "
+            "(it ships with planemo) or pass --no-validate."
+        ) from exc
+
+    try:
+        Format2StrictModel(**workflow)
+    except Exception as exc:
+        raise ValueError(f"gxformat2 strict schema validation failed: {exc}") from exc
+
+    try:
+        python_to_workflow(copy.deepcopy(workflow))
+    except Exception as exc:
+        raise ValueError(f"gxformat2 format2->native conversion failed: {exc}") from exc
+
+    lint_context = LintContext(level="error")
+    lint_format2(lint_context, workflow, raw_dict=workflow)
+    if lint_context.found_errors:
+        messages = "; ".join(str(m) for m in lint_context.error_messages)
+        raise ValueError(f"gxformat2 lint reported errors: {messages}")
+
+
+def write_build(request: Request, dm: str, version: str, outdir: Path, validate: bool = True) -> Path:
     workflow, job = build(request, dm, version)
+    if validate:
+        validate_workflow(workflow)
     build_dir = outdir / dm / version
     build_dir.mkdir(parents=True, exist_ok=True)
     wf_path = build_dir / "workflow.gxwf.yml"
@@ -184,20 +231,37 @@ def write_build(request: Request, dm: str, version: str, outdir: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("requests", nargs="+", help="Request YAML file(s) under data-managers/")
+    parser.add_argument("requests", nargs="*", help="Request YAML file(s) under data-managers/")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Process every request file under data-managers/ (instead of listing them)",
+    )
     parser.add_argument("--outdir", default="build", help="Where to write generated builds (default: build/)")
     parser.add_argument(
         "--galaxy-url",
         default="https://test.galaxyproject.org",
         help="Galaxy URL for the printed planemo command",
     )
+    parser.add_argument(
+        "--no-validate",
+        dest="validate",
+        action="store_false",
+        help="Skip gxformat2 validation of the generated workflow",
+    )
     args = parser.parse_args(argv)
 
+    if args.all:
+        request_paths = iter_request_files()
+    elif args.requests:
+        request_paths = [Path(r).resolve() for r in args.requests]
+    else:
+        parser.error("provide request file(s) or --all")
+
     outdir = Path(args.outdir)
-    for req_arg in args.requests:
-        path = Path(req_arg).resolve()
+    for path in request_paths:
         request, dm, version = load_request(path)
-        wf_path = write_build(request, dm, version, outdir)
+        wf_path = write_build(request, dm, version, outdir, validate=args.validate)
         job_path = wf_path.parent / "job.yml"
         history = f"idc-{dm}-{version}"
         print(f"# {dm} {version}")

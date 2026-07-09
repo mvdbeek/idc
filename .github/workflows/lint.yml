@@ -1,8 +1,8 @@
 name: Lint reference-data requests
 
 # Stage 1 of the IDC reference-data pipeline: validate contributed request
-# YAMLs. Pure validation, no secrets, so it is safe to run on pull requests
-# from forks.
+# YAMLs and the build workflows they generate. Pure validation, no secrets, so
+# it is safe to run on pull requests from forks.
 
 on:
   pull_request:
@@ -10,6 +10,7 @@ on:
       - "data-managers/**"
       - "published.yml"
       - "scripts/request_models.py"
+      - "scripts/generate_build.py"
       - ".github/workflows/lint.yml"
   push:
     branches:
@@ -18,6 +19,7 @@ on:
       - "data-managers/**"
       - "published.yml"
       - "scripts/request_models.py"
+      - "scripts/generate_build.py"
 
 jobs:
   lint:
@@ -28,6 +30,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install "pydantic>=2" pyyaml
+        run: pip install "pydantic>=2" pyyaml gxformat2
       - name: Lint request files
         run: python scripts/request_models.py
+      - name: Validate generated build workflows
+        # Generate a gxformat2 bundle workflow for every request and validate it
+        # with gxformat2 (strict schema, format2->native, semantic lint). Catches
+        # wiring errors - e.g. a chained request with no CHAIN_WIRING entry.
+        run: python scripts/generate_build.py --all --outdir "${RUNNER_TEMP}/idc-build-check"
