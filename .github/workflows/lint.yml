@@ -1,0 +1,33 @@
+name: Lint reference-data requests
+
+# Stage 1 of the IDC reference-data pipeline: validate contributed request
+# YAMLs. Pure validation, no secrets, so it is safe to run on pull requests
+# from forks.
+
+on:
+  pull_request:
+    paths:
+      - "data-managers/**"
+      - "published.yml"
+      - "scripts/request_models.py"
+      - ".github/workflows/lint.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "data-managers/**"
+      - "published.yml"
+      - "scripts/request_models.py"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install "pydantic>=2" pyyaml
+      - name: Lint request files
+        run: python scripts/request_models.py

@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Generate a Galaxy data-manager *bundle* workflow from an IDC request file.
+
+Given a request at ``data-managers/<dm>/<version>.yaml`` this emits a gxformat2
+workflow (``class: GalaxyWorkflow``) whose data-manager tool steps each run in
+``__data_manager_mode: bundle``, plus the planemo job file supplying the build
+parameters. Running that workflow on a Galaxy server (Stage 2, via planemo)
+produces the reference-data *bundle* dataset(s) that Jenkins later imports onto
+CVMFS.
+
+Build parameters are **exposed as workflow inputs** and connected to the tool
+parameters (a ``string`` input feeds a ``select`` parameter just fine - see
+Galaxy's ``lib/galaxy_test/workflow/multiple_text.gxwf.yml``); their concrete
+values live in the generated ``job.yml``. Only the structural selector of a
+chained tool (e.g. samestr's ``db_source.db_type``) is baked into ``tool_state``.
+
+Chained builds (a request with ``depends_on``) become multi-step workflows: the
+upstream data manager runs first (also in bundle mode) and its ``out_file``
+bundle is wired into the downstream tool's data-table-backed input - the pattern
+Galaxy's ``test_data_manager_workflow_bundle`` integration test uses to feed a
+fetched genome into an indexer.
+
+Usage::
+
+    python scripts/generate_build.py data-managers/motus_db_versioned/3.1.0.yaml
+    python scripts/generate_build.py data-managers/samestr_db/marker_db_mpa_vJan21.yaml --outdir build
+
+For each request it writes ``<outdir>/<dm>/<version>/workflow.gxwf.yml`` and
+``job.yml`` and prints the planemo command to run it.
+"""
+import argparse
+import sys
+from pathlib import Path
+
+import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from request_models import (  # noqa: E402
+    DATA_MANAGERS_DIR,
+    Request,
+    data_manager_name,
+    version_id,
+)
+
+# How to wire an upstream bundle into a downstream (chained) data manager. Keyed
+# on (downstream data manager, upstream data table). ``db_type`` selects the
+# branch of the downstream tool's conditional (baked into tool_state);
+# ``connect_param`` is the downstream input parameter (gxformat2 ``|`` notation)
+# that receives the upstream step's bundle output.
+CHAIN_WIRING = {
+    ("samestr_db", "metaphlan_database_versioned"): {
+        "tool_state": {"db_source": {"db_type": "metaphlan"}},
+        "connect_param": "db_source|database",
+    },
+    ("samestr_db", "motus_db_versioned"): {
+        "tool_state": {"db_source": {"db_type": "motus"}},
+        "connect_param": "db_source|motus_db",
+    },
+}
+
+OUT_FILE = "out_file"  # every data manager tool's bundle output
+
+
+def tool_version_of(tool_id: str) -> str:
+    """The trailing version component of a version-pinned toolshed GUID."""
+    return tool_id.rsplit("/", 1)[1]
+
+
+def deep_merge(base: dict, overlay: dict) -> dict:
+    out = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_request(path: Path) -> tuple[Request, str, str]:
+    doc = yaml.safe_load(path.read_text())
+    return Request(**doc), data_manager_name(path), version_id(path)
+
+
+class WorkflowBuilder:
+    """Accumulates gxformat2 steps, workflow inputs, and the planemo job."""
+
+    def __init__(self) -> None:
+        self.steps: dict = {}
+        self.inputs: dict = {}
+        self.job: dict = {}
+
+    def add_step(
+        self,
+        step_key: str,
+        tool_id: str,
+        params: dict,
+        *,
+        baked_state: dict | None = None,
+        connections: dict | None = None,
+        input_prefix: str = "",
+    ) -> None:
+        tool_state = dict(baked_state or {})
+        tool_state["__data_manager_mode"] = "bundle"
+
+        in_map: dict = {}
+        # Each build parameter -> a workflow input (string), connected to the
+        # tool parameter and given its value in the job file.
+        for param_path, value in params.items():
+            input_name = (input_prefix + param_path).replace("|", "_")
+            self.inputs[input_name] = {"type": "string"}
+            self.job[input_name] = value
+            in_map[param_path] = {"source": input_name}
+        # Upstream-bundle connections (chained builds).
+        for param_path, source in (connections or {}).items():
+            in_map[param_path] = {"source": source}
+
+        step: dict = {
+            "tool_id": tool_id,
+            "tool_version": tool_version_of(tool_id),
+            "tool_state": tool_state,
+        }
+        if in_map:
+            step["in"] = in_map
+        self.steps[step_key] = step
+
+    def workflow(self, label: str) -> dict:
+        return {
+            "class": "GalaxyWorkflow",
+            "label": label,
+            "inputs": self.inputs,
+            "steps": self.steps,
+        }
+
+
+def _resolve_request_path(dm: str, version: str) -> Path:
+    for ext in (".yaml", ".yml"):
+        candidate = DATA_MANAGERS_DIR / dm / f"{version}{ext}"
+        if candidate.exists():
+            return candidate
+    raise SystemExit(
+        f"Cannot resolve upstream request data-managers/{dm}/{version}.yaml - "
+        f"it must exist so the chained build's upstream step can be generated."
+    )
+
+
+def build(request: Request, dm: str, version: str) -> tuple[dict, dict]:
+    """Return (gxformat2 workflow dict, planemo job dict) for one request."""
+    wb = WorkflowBuilder()
+
+    connections: dict = {}
+    baked_state: dict = {}
+    for up_table, up_version in (request.depends_on or {}).items():
+        up_request, up_dm, _ = load_request(_resolve_request_path(up_table, up_version))
+        wb.add_step(up_dm, up_request.tool_id, up_request.params, input_prefix=f"{up_dm}_")
+
+        wiring = CHAIN_WIRING.get((dm, up_table))
+        if wiring is None:
+            raise SystemExit(
+                f"No chain wiring defined for downstream {dm!r} depending on {up_table!r}. "
+                f"Add an entry to CHAIN_WIRING in scripts/generate_build.py."
+            )
+        baked_state = deep_merge(baked_state, wiring["tool_state"])
+        connections[wiring["connect_param"]] = f"{up_dm}/{OUT_FILE}"
+
+    wb.add_step(
+        dm,
+        request.tool_id,
+        request.params,
+        baked_state=baked_state or None,
+        connections=connections or None,
+    )
+    return wb.workflow(f"IDC bundle: {dm} {version}"), wb.job
+
+
+def write_build(request: Request, dm: str, version: str, outdir: Path) -> Path:
+    workflow, job = build(request, dm, version)
+    build_dir = outdir / dm / version
+    build_dir.mkdir(parents=True, exist_ok=True)
+    wf_path = build_dir / "workflow.gxwf.yml"
+    (wf_path).write_text(yaml.safe_dump(workflow, sort_keys=False))
+    (build_dir / "job.yml").write_text(yaml.safe_dump(job, sort_keys=False) if job else "{}\n")
+    return wf_path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("requests", nargs="+", help="Request YAML file(s) under data-managers/")
+    parser.add_argument("--outdir", default="build", help="Where to write generated builds (default: build/)")
+    parser.add_argument(
+        "--galaxy-url",
+        default="https://test.galaxyproject.org",
+        help="Galaxy URL for the printed planemo command",
+    )
+    args = parser.parse_args(argv)
+
+    outdir = Path(args.outdir)
+    for req_arg in args.requests:
+        path = Path(req_arg).resolve()
+        request, dm, version = load_request(path)
+        wf_path = write_build(request, dm, version, outdir)
+        job_path = wf_path.parent / "job.yml"
+        history = f"idc-{dm}-{version}"
+        print(f"# {dm} {version}")
+        print(f"planemo run {wf_path} {job_path} \\")
+        print(f"  --galaxy_url {args.galaxy_url} --galaxy_user_key $TEST_GALAXY_KEY \\")
+        print(f'  --history_name "{history}" --tags idc --no_wait \\')
+        print(f"  --output_json {wf_path.parent / 'invocation.json'}")
+        print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

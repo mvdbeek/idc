@@ -1,0 +1,12 @@
+# Reference-data versions that have been built and published to CVMFS.
+#
+# This file is the source of truth for idempotency: the Stage 1 lint rejects a
+# request whose (data_manager, version) already appears here, and the build
+# stage skips it. Entries are added (by the publish automation) only after a
+# bundle has been successfully imported onto CVMFS.
+#
+# Shape:
+#   published:
+#     <data_manager>:
+#       - <version>
+published: {}
