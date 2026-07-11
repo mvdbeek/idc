@@ -44,7 +44,10 @@ USE_LOCAL_OVERLAYFS=false
 # Set to true to run the importer in a docker container
 USE_DOCKER="$USE_LOCAL_OVERLAYFS"
 
-REMOTE_PYTHON=/opt/rh/rh-python38/root/usr/bin/python3
+# Python interpreter on the Stratum 0 for the remote ephemeris/maintenance venvs.
+# The old rh-python38 SCL path is gone on the current (RHEL9) Stratum 0, which
+# ships Python 3.9 at /usr/bin/python3. Overridable via env for the next OS bump.
+: "${REMOTE_PYTHON:=/usr/bin/python3}"
 REMOTE_WORKDIR_PARENT=/srv/idc
 
 # $EPHEMERIS_API_KEY and $IDC_VAULT_PASS should be set in the environment
