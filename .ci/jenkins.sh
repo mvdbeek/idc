@@ -45,9 +45,11 @@ USE_LOCAL_OVERLAYFS=false
 USE_DOCKER="$USE_LOCAL_OVERLAYFS"
 
 # Python interpreter on the Stratum 0 for the remote ephemeris/maintenance venvs.
-# The old rh-python38 SCL path is gone on the current (RHEL9) Stratum 0, which
-# ships Python 3.9 at /usr/bin/python3. Overridable via env for the next OS bump.
-: "${REMOTE_PYTHON:=/usr/bin/python3}"
+# The old rh-python38 SCL path is gone on the current (RHEL9) Stratum 0, and its
+# system /usr/bin/python3 is only 3.9 - too old for galaxy-maintenance-scripts'
+# deps (yacman>=1.0 needs 3.10+). Use the CVMFS-provided Python 3.13, which is
+# version-controlled and survives host OS bumps. Overridable via env.
+: "${REMOTE_PYTHON:=/cvmfs/test.galaxyproject.org/venv/bin/python}"
 REMOTE_WORKDIR_PARENT=/srv/idc
 
 # $EPHEMERIS_API_KEY and $IDC_VAULT_PASS should be set in the environment
