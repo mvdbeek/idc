@@ -9,6 +9,13 @@ PUBLISH_GALAXY_URL="https://usegalaxy.org"
 # Galaxy where the IDC reference-data (workflow-bundle) builds run - Stage 2
 # (.github/workflows/build.yml) builds bundles here for Stage 3 to import.
 REFERENCE_DATA_GALAXY_URL="https://test.galaxyproject.org"
+# API key for $REFERENCE_DATA_GALAXY_URL. Stage 3 uses it (via bioblend) to look
+# up the built bundles' dataset ids on that server; the bundle download itself is
+# unauthenticated. This is a DISTINCT server from $PUBLISH_GALAXY_URL, so it needs
+# its own key - do not reuse $EPHEMERIS_API_KEY, which authenticates the genome
+# import against $PUBLISH_GALAXY_URL. Falls back to $EPHEMERIS_API_KEY only for
+# backward compatibility when a reference-data-only key is not provided.
+: ${REFERENCE_DATA_API_KEY:=${EPHEMERIS_API_KEY:-}}
 SSH_MASTER_SOCKET_DIR="${HOME}/.cache/idc"
 MAIN_BRANCH='main'
 
@@ -629,7 +636,7 @@ function import_reference_data_bundles() {
         # import_bundles.py resolves the build's bundles from its workflow
         # invocation (history idc-<dm>-<version>) and imports each, recording
         # record/<dm>/<version> for idempotency. API key filtered by Jenkins.
-        exec_on "EPHEMERIS_API_KEY='$EPHEMERIS_API_KEY' TMPDIR='${REMOTE_WORKDIR}' ${EPHEMERIS_BIN}/python3 ${REMOTE_WORKDIR}/import_bundles.py \
+        exec_on "EPHEMERIS_API_KEY='$REFERENCE_DATA_API_KEY' TMPDIR='${REMOTE_WORKDIR}' ${EPHEMERIS_BIN}/python3 ${REMOTE_WORKDIR}/import_bundles.py \
             --galaxy-url '$REFERENCE_DATA_GALAXY_URL' --history-name 'idc-${dm}-${version}' \
             --dm '$dm' --version '$version' --cvmfs-root '/cvmfs/${REPO}' \
             --import-cmd '${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle'"
