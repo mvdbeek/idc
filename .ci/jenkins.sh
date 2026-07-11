@@ -472,6 +472,10 @@ function wait_for_build_galaxy() {
 
 
 function stop_build_galaxy() {
+    # The build Galaxy (and its ansible-venv) is only set up when there are
+    # genome data managers to run; an import-only run (e.g. reference-data-only,
+    # or "Nothing to build") never starts it, so there is nothing to tear down.
+    $BUILD_GALAXY_UP || return 0
     . ./ansible-venv/bin/activate
     log "Stopping Build Galaxy"
     pushd ansible
