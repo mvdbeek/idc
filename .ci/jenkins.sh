@@ -49,12 +49,14 @@ USE_LOCAL_OVERLAYFS=false
 # Set to true to run the importer in a docker container
 USE_DOCKER="$USE_LOCAL_OVERLAYFS"
 
-# Python interpreter on the Stratum 0 for the remote ephemeris/maintenance venvs.
-# The old rh-python38 SCL path is gone on the current (RHEL9) Stratum 0, and its
-# system /usr/bin/python3 is only 3.9 - too old for galaxy-maintenance-scripts'
-# deps (yacman>=1.0 needs 3.10+). Use the CVMFS-provided Python 3.13, which is
-# version-controlled and survives host OS bumps. Overridable via env.
-: "${REMOTE_PYTHON:=/cvmfs/test.galaxyproject.org/venv/bin/python}"
+# Python for the remote ephemeris/maintenance venvs. The Stratum 0's system
+# python3 is only 3.9 (too old for galaxy-maintenance-scripts' deps, e.g.
+# yacman>=1.0 which needs 3.10+), and CVMFS-provided Pythons aren't reliably
+# present on every worker, so setup_remote_python() bootstraps a pinned
+# standalone CPython with uv. Set REMOTE_PYTHON in the environment to use a
+# specific interpreter instead and skip the uv bootstrap.
+REMOTE_PYTHON="${REMOTE_PYTHON:-}"
+: "${REMOTE_PYTHON_VERSION:=3.13}"
 REMOTE_WORKDIR_PARENT=/srv/idc
 
 # $EPHEMERIS_API_KEY and $IDC_VAULT_PASS should be set in the environment
@@ -247,6 +249,27 @@ function setup_ephemeris() {
     log_exec "${EPHEMERIS_BIN}/pip" install --upgrade pip wheel
     log_exec "${EPHEMERIS_BIN}/pip" install --index-url https://wheels.galaxyproject.org/simple/ \
         --extra-index-url https://pypi.org/simple/ "${EPHEMERIS:=ephemeris}"
+}
+
+
+function setup_remote_python() {
+    # Sets global $REMOTE_PYTHON to a pinned standalone CPython bootstrapped with
+    # uv, so the remote venvs don't depend on the host OS Python (too old) or on
+    # a CVMFS-provided Python being mounted on this particular worker/Stratum 0.
+    # Honor an explicit REMOTE_PYTHON from the environment and skip the bootstrap.
+    if [ -n "$REMOTE_PYTHON" ]; then
+        log "Using preset REMOTE_PYTHON=${REMOTE_PYTHON}"
+        return
+    fi
+    log "Bootstrapping remote Python ${REMOTE_PYTHON_VERSION} with uv"
+    # uv is a single static binary; install it into the (ephemeral) workdir and
+    # let it fetch a managed CPython. UV_INSTALL_DIR sets the binary location;
+    # INSTALLER_NO_MODIFY_PATH keeps it from touching the idc user's profile.
+    exec_on "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR='${REMOTE_WORKDIR}/uv' INSTALLER_NO_MODIFY_PATH=1 sh"
+    local uv="${REMOTE_WORKDIR}/uv/uv"
+    exec_on "$uv" python install "$REMOTE_PYTHON_VERSION"
+    REMOTE_PYTHON="$(exec_on "$uv" python find "$REMOTE_PYTHON_VERSION")"
+    log "Remote Python: ${REMOTE_PYTHON}"
 }
 
 
@@ -746,6 +769,7 @@ function do_import_local() {
 function do_import_remote() {
     start_ssh_control
     create_remote_workdir
+    setup_remote_python
     setup_remote_ephemeris
     # from this point forward $EPHEMERIS_BIN refers to remote
     local have_genome_tasks=false have_reference_data=false
