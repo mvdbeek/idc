@@ -4,6 +4,11 @@ set -euo pipefail
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
 
+# Set to 'true' to import ONLY reference-data (data-managers/) bundles and skip
+# the genome (tool-data) build+import entirely. Also enabled by commenting
+# "@galaxybot deploy reference-data" on the PR (see check_bot_command).
+: ${REFERENCE_DATA_ONLY:=false}
+
 BUILD_GALAXY_URL="http://idc-build"
 PUBLISH_GALAXY_URL="https://usegalaxy.org"
 # Galaxy where the IDC reference-data (workflow-bundle) builds run - Stage 2
@@ -169,10 +174,15 @@ function check_bot_command() {
     log 'Checking for Github PR Bot commands'
     log_debug "Value of \$ghprbCommentBody is: ${ghprbCommentBody:-UNSET}"
     case "${ghprbCommentBody:-UNSET}" in
+        "@galaxybot deploy reference-data"*)
+            PUBLISH=true
+            REFERENCE_DATA_ONLY=true
+            ;;
         "@galaxybot deploy"*)
             PUBLISH=true
             ;;
     esac
+    $REFERENCE_DATA_ONLY && log "Reference-data-only deploy: skipping genome build/import"
     if $PUBLISH; then
         log "Publish requested; running build and import"
     else
@@ -739,7 +749,9 @@ function do_import_remote() {
     setup_remote_ephemeris
     # from this point forward $EPHEMERIS_BIN refers to remote
     local have_genome_tasks=false have_reference_data=false
-    generate_import_tasks && have_genome_tasks=true
+    if ! $REFERENCE_DATA_ONLY && generate_import_tasks; then
+        have_genome_tasks=true
+    fi
     # UNTESTED: also open a transaction when only reference-data requests exist
     has_reference_data_requests && have_reference_data=true
     if $have_genome_tasks || $have_reference_data; then
@@ -765,7 +777,7 @@ function main() {
     detect_changes
     set_repo_vars
     setup_ephemeris
-    if generate_data_manager_tasks; then
+    if ! $REFERENCE_DATA_ONLY && generate_data_manager_tasks; then
         run_build_galaxy
         wait_for_build_galaxy
         #install_data_managers
