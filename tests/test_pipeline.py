@@ -40,9 +40,10 @@ def test_seed_requests_lint_clean():
 def test_tool_id_must_be_version_pinned():
     with pytest.raises(Exception):
         rm.Request(tool_id="toolshed.g2.bx.psu.edu/repos/iuc/repo/tool", data_tables=["t"])
+    with pytest.raises(Exception):
+        rm.Request(tool_id="testtoolshed.g2.bx.psu.edu/repos/iuc/repo/tool/1.0", data_tables=["t"])
     # 6-part (version-pinned) is accepted
     rm.Request(tool_id="toolshed.g2.bx.psu.edu/repos/iuc/repo/tool/1.0", data_tables=["t"])
-
 
 def test_lint_rejects_dir_table_mismatch(tmp_path):
     p = rm.DATA_MANAGERS_DIR / "motus_db_versioned" / "_probe.yaml"

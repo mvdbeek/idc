@@ -36,7 +36,7 @@ PUBLISHED_PATH = REPO_ROOT / "published.yml"
 
 # A toolshed GUID looks like:
 #   toolshed.g2.bx.psu.edu/repos/<owner>/<repo>/<tool>/<version>
-TOOL_ID_PREFIXES = ("toolshed.g2.bx.psu.edu/repos/", "testtoolshed.g2.bx.psu.edu/repos/")
+TOOL_ID_PREFIX = "toolshed.g2.bx.psu.edu/repos/"
 
 
 class Request(BaseModel):
@@ -63,9 +63,9 @@ class Request(BaseModel):
     @field_validator("tool_id")
     @classmethod
     def _tool_id_is_a_guid(cls, v: str) -> str:
-        if not v.startswith(TOOL_ID_PREFIXES):
+        if not v.startswith(TOOL_ID_PREFIX):
             raise ValueError(
-                f"tool_id must be a toolshed GUID starting with one of {TOOL_ID_PREFIXES}, got: {v!r}"
+                f"tool_id must be a production Tool Shed GUID starting with {TOOL_ID_PREFIX!r}, got: {v!r}"
             )
         # Require the full, version-pinned GUID:
         #   host/repos/owner/repo/tool/version   (6 slash-separated parts)
