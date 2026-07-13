@@ -58,7 +58,6 @@ class Request(BaseModel):
     # Human-facing provenance (unused by the build, but reviewed in the PR).
     description: Optional[str] = None
     doi: Optional[str] = None
-    checksum: Optional[str] = None
 
     @field_validator("tool_id")
     @classmethod

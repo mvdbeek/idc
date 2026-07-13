@@ -45,6 +45,16 @@ def test_tool_id_must_be_version_pinned():
     # 6-part (version-pinned) is accepted
     rm.Request(tool_id="toolshed.g2.bx.psu.edu/repos/iuc/repo/tool/1.0", data_tables=["t"])
 
+
+def test_request_rejects_unimplemented_checksum_field():
+    with pytest.raises(Exception):
+        rm.Request(
+            tool_id="toolshed.g2.bx.psu.edu/repos/iuc/repo/tool/1.0",
+            data_tables=["t"],
+            checksum="sha256:abc",
+        )
+
+
 def test_lint_rejects_dir_table_mismatch(tmp_path):
     p = rm.DATA_MANAGERS_DIR / "motus_db_versioned" / "_probe.yaml"
     p.write_text("tool_id: toolshed.g2.bx.psu.edu/repos/iuc/a/b/1\ndata_tables: [other]\n")

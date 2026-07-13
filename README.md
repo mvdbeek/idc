@@ -160,7 +160,6 @@ params:
 # Optional, human-facing provenance:
 description: mOTUs profiler database, version 3.1.0
 doi:
-checksum:
 ```
 
 **Chained request** (a data manager that builds from another database), e.g.
@@ -253,4 +252,3 @@ Work has been done on some of the other data types, tools and data managers such
 
 If you want to use the reference data, please have a look at our [ansible-role](https://github.com/galaxyproject/ansible-cvmfs
 ) and the [example playbook](https://github.com/usegalaxy-eu/cvmfs-example).
-
