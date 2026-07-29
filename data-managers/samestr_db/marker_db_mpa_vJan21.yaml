@@ -2,7 +2,7 @@
 # Chained build: samestr's "database" input is backed by the
 # metaphlan_database_versioned data table, so the build workflow first runs the
 # MetaPhlAn data manager (bundle mode) and feeds its output into this step.
-tool_id: toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy2
+tool_id: toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy3
 data_tables:
   - samestr_db
 depends_on:
