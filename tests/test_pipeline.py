@@ -80,7 +80,7 @@ def test_standalone_build_single_bundle_step():
     step = workflow["steps"]["motus_db_versioned"]
     assert step["tool_state"]["__data_manager_mode"] == "bundle"
     assert workflow["outputs"] == {"motus_db_versioned_bundle": {"outputSource": "motus_db_versioned/out_file"}}
-    assert job == {"version": "3.1.0"}
+    assert job == {"version": "3.1.0", "db_value": "db_from_2026-04-27T094930Z"}
     gb.validate_workflow(workflow)  # gxformat2 strict + native + lint
 
 

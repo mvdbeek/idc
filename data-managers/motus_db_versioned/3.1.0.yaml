@@ -1,8 +1,11 @@
 # mOTUs database v3.1.0 (fetched from Zenodo record 7778108).
 # Standalone build: the data manager downloads the DB by version.
-tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy1
+tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy2
 data_tables:
   - motus_db_versioned
 params:
   version: "3.1.0"   # the tool's "Database Version" select param
+  # Pin the identifier to usegalaxy.eu's existing entry (the +galaxy2 DM defaults
+  # to db_from_<Zenodo publication date>; override it so idc matches usegalaxy.eu).
+  db_value: "db_from_2026-04-27T094930Z"
 description: mOTUs profiler database, version 3.1.0
