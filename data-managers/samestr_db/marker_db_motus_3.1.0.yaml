@@ -1,0 +1,13 @@
+# SameStr marker database built from the mOTUs 3.1.0 database.
+# Chained build: samestr's "motus_db" input is backed by the motus_db_versioned
+# data table, so the build workflow first runs the mOTUs data manager (bundle
+# mode) and feeds its output into this step.
+tool_id: toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy4
+data_tables:
+  - samestr_db
+depends_on:
+  # Which mOTUs version this SameStr DB is built against. A request file must
+  # exist at data-managers/motus_db_versioned/<version>.yaml.
+  motus_db_versioned: "3.1.0"
+params: {}
+description: SameStr marker database derived from mOTUs 3.1.0
