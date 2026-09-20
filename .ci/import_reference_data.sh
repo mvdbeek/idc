@@ -45,7 +45,7 @@ for req in "$REPO_DIR"/data-managers/*/*.yml "$REPO_DIR"/data-managers/*/*.yaml;
     "$PYTHON" "$REPO_DIR/scripts/import_bundles.py" \
         --galaxy-url "$GALAXY_URL" \
         --history-name "idc-${dm}-${version}" \
-        --dm "$dm" --version "$version" \
+        --dm "$dm" --version "$version" --request "$req" \
         --cvmfs-root "$CVMFS_ROOT" \
         --import-cmd "$IMPORT_CMD"
 done

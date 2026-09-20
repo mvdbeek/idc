@@ -12,6 +12,12 @@ to the reference-data identity: a build is skipped if
 ``<cvmfs-root>/record/<dm>/<version>`` already exists, and that marker is written
 after a successful import.
 
+A chained build (a request with ``depends_on``) also produces its upstream
+data manager's bundle. Given ``--request <yaml>``, an upstream bundle is skipped
+when ``record/<upstream dm>/<upstream version>`` already exists (it was published
+by its own request), and that marker is written when the chain imports it - so
+the same database is never imported twice.
+
 This is meant to run inside the Jenkins CVMFS transaction (see .ci/jenkins.sh);
 ``--dry-run`` prints the exact commands without importing, so the wiring is
 testable offline.
@@ -45,6 +51,22 @@ def import_command(import_cmd: str, cvmfs_root: str, url: str) -> list[str]:
 
 def record_marker(cvmfs_root: str, dm: str, version: str) -> Path:
     return Path(cvmfs_root) / "record" / dm / version
+
+
+def upstream_versions(request_path: str | None) -> dict[str, str]:
+    """``depends_on`` of a request file: upstream data manager -> version."""
+    if not request_path:
+        return {}
+    import yaml
+
+    with open(request_path) as fh:
+        request = yaml.safe_load(fh) or {}
+    return dict(request.get("depends_on") or {})
+
+
+def bundle_dm(label: str, suffix: str) -> str:
+    """The data manager a bundle output label (``<dm>_bundle``) belongs to."""
+    return label[: -len(suffix)] if suffix and label.endswith(suffix) else label
 
 
 def _galaxy_connection(args):
@@ -89,6 +111,10 @@ def _parser() -> argparse.ArgumentParser:
         default="galaxy-import-data-bundle",
         help="galaxy-import-data-bundle executable (path)",
     )
+    parser.add_argument(
+        "--request",
+        help="The request YAML; its depends_on lets already-published upstream bundles be skipped",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Import even if a record marker exists")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without importing")
     return parser
@@ -109,21 +135,38 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No bundles to import for {args.dm}/{args.version}; skipping")
         return 0
 
+    upstream = upstream_versions(args.request)
+    imported: dict[str, str] = {}
+    upstream_markers: list[Path] = []
     for label, dataset_id in bundles.items():
+        dm = bundle_dm(label, args.bundle_suffix)
+        if dm != args.dm and dm in upstream:
+            # The chain rebuilt its upstream database; import it only if that
+            # database's own request has not already published it.
+            up_marker = record_marker(args.cvmfs_root, dm, upstream[dm])
+            if up_marker.exists() and not args.overwrite:
+                print(f"# skip {label}: {dm}/{upstream[dm]} already imported (record {up_marker} exists)")
+                continue
+            upstream_markers.append(up_marker)
         url = bundle_url(args.galaxy_url, dataset_id)
         cmd = import_command(args.import_cmd, args.cvmfs_root, url)
         print(f"# import {label}")
         print(" ".join(cmd))
         if not args.dry_run:
             subprocess.run(cmd, check=True)
+        imported[label] = dataset_id
 
     if args.dry_run:
+        for up_marker in upstream_markers:
+            print(f"# (dry-run) would record: {up_marker}")
         print(f"# (dry-run) would record: {marker}")
         return 0
 
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("\n".join(f"{label}: {ds}" for label, ds in bundles.items()) + "\n")
-    print(f"Recorded import: {marker}")
+    record = "\n".join(f"{label}: {ds}" for label, ds in imported.items()) + "\n"
+    for record_path in [*upstream_markers, marker]:
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(record)
+        print(f"Recorded import: {record_path}")
     return 0
 
 

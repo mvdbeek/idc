@@ -662,7 +662,7 @@ function has_reference_data_requests() {
 
 
 function import_reference_data_bundles() {
-    local req dm version
+    local req dm version staged_req
     log "Importing IDC reference-data bundles"
     copy_to scripts/get_bundle_urls.py
     copy_to scripts/import_bundles.py
@@ -675,13 +675,21 @@ function import_reference_data_bundles() {
         # request because its data already exists.
         log "Importing reference-data bundles for '${dm}/${version}'"
         exec_on mkdir -p "/cvmfs/${REPO}/data" "/cvmfs/${REPO}/record/${dm}"
+        # Ship the request itself (under a dm-qualified name; copy_to keeps only
+        # the basename) so import_bundles.py can read its depends_on and skip an
+        # upstream bundle that the upstream request already published.
+        staged_req="$(mktemp -t "idc-request-${dm}-${version}.XXXXXX.yaml")"
+        cp "$req" "$staged_req"
+        copy_to "$staged_req"
         # import_bundles.py resolves the build's bundles from its workflow
         # invocation (history idc-<dm>-<version>) and imports each, recording
         # record/<dm>/<version> for idempotency. API key filtered by Jenkins.
         exec_on "EPHEMERIS_API_KEY='$REFERENCE_DATA_API_KEY' TMPDIR='${REMOTE_WORKDIR}' ${EPHEMERIS_BIN}/python3 ${REMOTE_WORKDIR}/import_bundles.py \
             --galaxy-url '$REFERENCE_DATA_GALAXY_URL' --history-name 'idc-${dm}-${version}' \
             --dm '$dm' --version '$version' --cvmfs-root '/cvmfs/${REPO}' \
+            --request '${REMOTE_WORKDIR}/${staged_req##*/}' \
             --import-cmd '${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle'"
+        rm -f "$staged_req"
     done
 }
 

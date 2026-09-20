@@ -323,3 +323,65 @@ def test_import_dry_run_and_idempotency(tmp_path, capsys):
     marker.write_text("done\n")
     assert imp.main(args) == 0
     assert "skipping" in capsys.readouterr().out
+
+
+def test_chain_import_skips_published_upstream_and_records_it(tmp_path, capsys):
+    """A chained build also carries its upstream bundle. With --request, that
+    bundle is skipped when the upstream request already published the database,
+    and otherwise imported once with the upstream's own record marker written."""
+    inv = tmp_path / "inv.json"
+    inv.write_text(
+        '{"outputs":{"motus_db_versioned_bundle":{"id":"dsMOTUS","src":"hda"},'
+        '"samestr_db_bundle":{"id":"dsSAM","src":"hda"}}}'
+    )
+    req = tmp_path / "marker_db_motus_3.1.0.yaml"
+    req.write_text(
+        "tool_id: toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy4\n"
+        "data_tables: [samestr_db]\n"
+        'depends_on: {motus_db_versioned: "3.1.0"}\n'
+    )
+    args = [
+        "--galaxy-url", "https://test.galaxyproject.org",
+        "--invocation-json", str(inv),
+        "--dm", "samestr_db", "--version", "marker_db_motus_3.1.0",
+        "--request", str(req),
+        "--cvmfs-root", str(tmp_path),
+        "--dry-run",
+    ]
+    up_marker = imp.record_marker(str(tmp_path), "motus_db_versioned", "3.1.0")
+
+    # upstream not yet published: both bundles import, both markers would be written
+    assert imp.main(args) == 0
+    out = capsys.readouterr().out
+    assert "# import motus_db_versioned_bundle" in out
+    assert "# import samestr_db_bundle" in out
+    assert f"would record: {up_marker}" in out
+
+    # upstream already published by its own request: only samestr imports
+    up_marker.parent.mkdir(parents=True, exist_ok=True)
+    up_marker.write_text("done\n")
+    assert imp.main(args) == 0
+    out = capsys.readouterr().out
+    assert "# import motus_db_versioned_bundle" not in out
+    assert "# skip motus_db_versioned_bundle" in out
+    assert "# import samestr_db_bundle" in out
+
+
+def test_import_without_request_imports_every_bundle(tmp_path, capsys):
+    """Without --request nothing is known about upstreams: behaviour unchanged."""
+    inv = tmp_path / "inv.json"
+    inv.write_text(
+        '{"outputs":{"motus_db_versioned_bundle":{"id":"dsMOTUS","src":"hda"},'
+        '"samestr_db_bundle":{"id":"dsSAM","src":"hda"}}}'
+    )
+    up_marker = imp.record_marker(str(tmp_path), "motus_db_versioned", "3.1.0")
+    up_marker.parent.mkdir(parents=True, exist_ok=True)
+    up_marker.write_text("done\n")
+    assert imp.main([
+        "--invocation-json", str(inv),
+        "--dm", "samestr_db", "--version", "marker_db_motus_3.1.0",
+        "--cvmfs-root", str(tmp_path), "--dry-run",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "# import motus_db_versioned_bundle" in out
+    assert "# import samestr_db_bundle" in out
