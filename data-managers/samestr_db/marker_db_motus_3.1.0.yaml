@@ -9,5 +9,11 @@ depends_on:
   # Which mOTUs version this SameStr DB is built against. A request file must
   # exist at data-managers/motus_db_versioned/<version>.yaml.
   motus_db_versioned: "3.1.0"
+# Empty on purpose: the tool's db_source conditional is not steered from here.
+# depends_on names the upstream table, and CHAIN_WIRING in generate_build.py maps
+# (samestr_db, motus_db_versioned) -> db_source|db_type=motus plus the input that
+# receives the bundle, so the non-default branch is selected by the dependency
+# itself. params is for a build's own tool parameters - see
+# data-managers/motus_db_versioned/3.1.0.yaml for an example that uses it.
 params: {}
 description: SameStr marker database derived from mOTUs 3.1.0

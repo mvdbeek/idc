@@ -145,6 +145,15 @@ data-managers/<data_manager>/<version>.yaml
 - `<version>` (the file name, without extension) is the version identity used for
   the build history and for idempotency — it must be unique per data manager.
 
+Pick the identity the data manager itself uses, so it is recognisable in the data
+table afterwards (see "Avoiding rebuilds" below). If the upstream data carries no
+version — BLAST `nr`, say, which is simply whatever was current when you fetched
+it — date-stamp the identity instead (`nr_2026-09-21`) and record what that means
+in `description`. The data manager does not need a version *parameter* for this
+to work: an unparameterised "fetch the current release" data manager is requested
+with `params: {}`, and the date in the identity is what distinguishes one build
+from the next.
+
 **Standalone request** (a self-contained download/build), e.g.
 `data-managers/motus_db_versioned/3.1.0.yaml`:
 
@@ -233,6 +242,21 @@ the data tables it is meant to mirror. Three consequences worth knowing:
   reference Galaxy stops the build rather than silently rebuilding everything. A
   404 is different: it definitively means the table is not configured there, and
   is reported as a warning (expected for a brand-new data manager).
+
+The request path therefore carries an assumption: that
+`data-managers/<data_manager>/<version>` describes the entry the data manager
+will write. Half of that is enforced — the lint rejects a request whose directory
+name is not one of its own `data_tables`. The other half cannot be, at request
+time: only the data manager knows what `value` it will emit, and several of them
+append a build date (`mpa_vJan21_CHOCOPhlAnSGB_202103-04042023`) or invent an
+identifier of their own (mOTUs writes `db_from_<date>`, which is why that request
+pins `db_value`). The heuristic above absorbs both cases, and a mismatch is
+self-announcing rather than silent: the request would simply never be recognised
+as built. To check the post-condition explicitly once CVMFS has propagated:
+
+```bash
+python scripts/check_data_exists.py --all --expect-exists    # non-zero if a request is missing
+```
 
 For **chained** requests this also avoids redundant upstream work: if the
 upstream database a request `depends_on` already exists in the data table, the

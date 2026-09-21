@@ -270,6 +270,18 @@ def test_print_new_fails_rather_than_rebuilding_when_galaxy_cannot_answer(tmp_pa
     assert "cannot tell whether this already exists" in err
 
 
+def test_expect_exists_verifies_the_identity_we_key_on(tmp_path, monkeypatch, capsys):
+    """Post-import check: the version identity in the request path must be
+    findable in the row the data manager actually wrote."""
+    monkeypatch.setattr(cde, "fetch_table", lambda url, table: _MOTUS_TABLE)
+    assert cde.main([str(SEEDS["motus"]), "--expect-exists", "--reference-galaxy", "http://g"]) == 0
+    assert "ok: motus_db_versioned/3.1.0 is present" in capsys.readouterr().out
+
+    monkeypatch.setattr(cde, "fetch_table", lambda url, table: {"fields": []})
+    assert cde.main([str(SEEDS["motus"]), "--expect-exists", "--reference-galaxy", "http://g"]) == 1
+    assert "does not match the entry that was written" in capsys.readouterr().err
+
+
 def test_lint_mode_warns_without_failing(tmp_path, monkeypatch, capsys):
     """The PR lint is informational: it annotates and still exits 0."""
     monkeypatch.setattr(cde, "fetch_table", lambda url, table: _MOTUS_TABLE)

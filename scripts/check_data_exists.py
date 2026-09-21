@@ -20,6 +20,7 @@ Usage::
 
     python scripts/check_data_exists.py --all                       # exit 1 if any exist
     python scripts/check_data_exists.py --all --warn                # annotate, exit 0
+    python scripts/check_data_exists.py --all --expect-exists        # verify after an import
     python scripts/check_data_exists.py data-managers/motus_db_versioned/3.1.0.yaml
 """
 import argparse
@@ -146,11 +147,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from-file", help="Read request paths from this file (one per line)")
     parser.add_argument("--reference-galaxy", default=DEFAULT_GALAXY, help="Galaxy whose data tables to query")
     parser.add_argument("--warn", action="store_true", help="Annotate and exit 0 instead of failing")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--print-new",
         action="store_true",
         help="Print (stdout) the requests whose data does NOT exist yet. For build/import filtering. "
         "Exits non-zero only if the reference Galaxy could not answer for some request.",
+    )
+    mode.add_argument(
+        "--expect-exists",
+        action="store_true",
+        help="Invert: fail if a request is NOT present. Post-import verification that the version "
+        "identity we key on is the one the data manager actually wrote into the table.",
     )
     args = parser.parse_args(argv)
 
@@ -180,6 +188,22 @@ def main(argv: list[str] | None = None) -> int:
             f"{prefix}{dm}/{version}: cannot tell whether this already exists - {reason} ({path})",
             file=sys.stderr,
         )
+
+    if args.expect_exists:
+        # The pipeline keys idempotency on data-managers/<dm>/<version>, assuming
+        # <version> is findable in the row the data manager wrote. Nothing can
+        # check that before the build - only the data manager knows what value it
+        # emits - so this is the post-condition, run once CVMFS has propagated.
+        for _path, dm, version in existing:
+            print(f"ok: {dm}/{version} is present on {args.reference_galaxy}")
+        for path in new:
+            print(
+                f"::error:: {data_manager_name(Path(path))}/{version_id(Path(path))} is not in any of its "
+                f"data tables on {args.reference_galaxy} - either it has not propagated yet, or the "
+                f"request's version identity does not match the entry that was written ({path})",
+                file=sys.stderr,
+            )
+        return 1 if (new or unknown) else 0
 
     if args.print_new:
         # Say what was dropped, so an empty build list is diagnosable.
