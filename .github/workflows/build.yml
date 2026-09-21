@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install planemo "pydantic>=2" pyyaml gxformat2
+        run: pip install planemo "pydantic>=2" pyyaml jsonschema gxformat2
 
       - name: Select requests to build
         run: |

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/galaxyproject/idc/main/schemas/request.schema.json
 # SameStr marker database, built from a MetaPhlAn database.
 # Chained build: samestr's "database" input is backed by the
 # metaphlan_database_versioned data table, so the build workflow first runs the

@@ -43,6 +43,7 @@ from request_models import (  # noqa: E402
     iter_request_files,
     version_id,
 )
+from tool_schemas import flatten_params  # noqa: E402
 
 # How to wire an upstream bundle into a downstream (chained) data manager. Keyed
 # on (downstream data manager, upstream data table). ``db_type`` selects the
@@ -107,8 +108,9 @@ class WorkflowBuilder:
 
         in_map: dict = {}
         # Each build parameter -> a workflow input (string), connected to the
-        # tool parameter and given its value in the job file.
-        for param_path, value in params.items():
+        # tool parameter and given its value in the job file. Request files
+        # nest params like the tool form; workflows connect by a|b paths.
+        for param_path, value in flatten_params(params).items():
             input_name = (input_prefix + param_path).replace("|", "_")
             self.inputs[input_name] = {"type": "string"}
             self.job[input_name] = value

@@ -16,9 +16,16 @@ those files and is run as the Stage 1 CI lint::
 
     python scripts/request_models.py                 # lint everything
     python scripts/request_models.py data-managers/motus_db_versioned/3.1.0.yaml
+    python scripts/request_models.py --no-tool-schemas   # offline: skip the params check
+
+``params`` are checked against the data manager's own parameter schema, which
+the Tool Shed publishes per tool version (see ``tool_schemas.py``); the schema
+for every GUID already in use is baked into ``schemas/request.schema.json`` so
+that check normally needs no network.
 
 Exit code is non-zero if any file fails validation.
 """
+import argparse
 import sys
 from pathlib import Path
 from typing import Optional
@@ -27,7 +34,16 @@ import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     field_validator,
+)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tool_schemas import (  # noqa: E402
+    SchemaResolver,
+    SchemaSource,
+    SchemaUnavailable,
+    validate_params,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +52,9 @@ DATA_MANAGERS_DIR = REPO_ROOT / "data-managers"
 # A toolshed GUID looks like:
 #   toolshed.g2.bx.psu.edu/repos/<owner>/<repo>/<tool>/<version>
 TOOL_ID_PREFIX = "toolshed.g2.bx.psu.edu/repos/"
+# Same rule as _tool_id_is_a_guid below, for the exported JSON Schema (editors);
+# the validator keeps the friendlier error message for the lint.
+TOOL_ID_PATTERN = r"^toolshed\.g2\.bx\.psu\.edu/repos/[^/]+/[^/]+/[^/]+/[^/]+$"
 
 
 class Request(BaseModel):
@@ -44,19 +63,42 @@ class Request(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Full toolshed GUID of the data manager tool that builds this data.
-    tool_id: str
+    tool_id: str = Field(
+        description=(
+            "Version-pinned Tool Shed GUID of the data manager tool: "
+            "toolshed.g2.bx.psu.edu/repos/<owner>/<repo>/<tool id>/<version>. <tool id> and <version> "
+            "are the id= and version= of the <tool> tag, not the repository name."
+        ),
+        json_schema_extra={"pattern": TOOL_ID_PATTERN},
+    )
     # Data table(s) the data manager populates (its bundle carries these rows).
-    data_tables: list[str]
-    # Tool parameters for this specific build, e.g. {"index": "mpa_vJan21_..."}.
-    params: dict[str, object] = {}
+    data_tables: list[str] = Field(
+        min_length=1,
+        description="Data table(s) the data manager writes. The request's directory must be named after one of them.",
+    )
+    # Tool parameters for this specific build, e.g. {"index": "mpa_vJan21_..."},
+    # nested like the tool form; generate_build.py flattens them to a|b paths.
+    params: dict[str, object] = Field(
+        default={},
+        description=(
+            "The data manager's tool parameters for this build, keyed by <param name=> and nested like the "
+            "tool form (db_source: {db_type: motus}). Checked against the tool's parameter schema from the Tool Shed."
+        ),
+    )
     # For chained builds: maps an upstream data table name -> the upstream
     # version this build depends on. e.g. samestr depends on a metaphlan db:
     #   depends_on: {metaphlan_database_versioned: mpa_vJan21_CHOCOPhlAnSGB_202103}
-    depends_on: Optional[dict[str, str]] = None
+    depends_on: Optional[dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Chained builds: upstream data table name -> the upstream version this build is derived from. "
+            "A request file must exist at data-managers/<table>/<version>.yaml."
+        ),
+    )
 
     # Human-facing provenance (unused by the build, but reviewed in the PR).
-    description: Optional[str] = None
-    doi: Optional[str] = None
+    description: Optional[str] = Field(default=None, description="What this data is, for reviewers.")
+    doi: Optional[str] = Field(default=None, description="DOI of the publication or dataset this data comes from.")
 
     @field_validator("tool_id")
     @classmethod
@@ -75,13 +117,6 @@ class Request(BaseModel):
                 f"tool_id must be a version-pinned GUID host/repos/owner/repo/tool/version "
                 f"(the trailing tool version is required for reproducibility): {v!r}"
             )
-        return v
-
-    @field_validator("data_tables")
-    @classmethod
-    def _data_tables_non_empty(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("data_tables must list at least one data table")
         return v
 
 
@@ -105,8 +140,12 @@ def iter_request_files() -> list[Path]:
     return sorted(p for p in DATA_MANAGERS_DIR.rglob("*.y*ml") if p.is_file())
 
 
-def lint_file(path: Path) -> list[str]:
-    """Return a list of error strings for one request file (empty == ok)."""
+def lint_file(path: Path, tool_schemas: Optional[SchemaResolver] = None) -> list[str]:
+    """Return a list of error strings for one request file (empty == ok).
+
+    ``tool_schemas`` resolves a tool GUID to the data manager's params schema
+    (see ``tool_schemas.SchemaSource``); None skips the params check.
+    """
     errors: list[str] = []
     try:
         rel = path.relative_to(REPO_ROOT)
@@ -159,14 +198,41 @@ def lint_file(path: Path) -> list[str]:
                 f"add the upstream request so it can be built first"
             )
 
+    # params must be parameters the data manager actually has, with values it
+    # accepts. Only the tool knows that, and the Tool Shed publishes its answer
+    # as a schema. The chain wiring baked in by generate_build.py is not part
+    # of params and is validated there, by gxformat2.
+    if tool_schemas is not None:
+        try:
+            schema = tool_schemas(req.tool_id)
+        except SchemaUnavailable as exc:
+            errors.append(
+                f"{rel}: cannot check params - no parameter schema for tool_id {req.tool_id}: {exc}"
+            )
+        else:
+            for problem in validate_params(schema, req.params):
+                errors.append(f"{rel}: params: {problem}")
+
     return errors
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(description="Lint IDC reference-data request files.")
+    parser.add_argument("files", nargs="*", help="Request file(s); default: every file under data-managers/")
+    parser.add_argument(
+        "--no-tool-schemas",
+        action="store_true",
+        help="Skip checking params against the data manager's parameter schema (offline mode)",
+    )
+    parser.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="Check params only against schemas already in schemas/request.schema.json; never ask the Tool Shed",
+    )
+    args = parser.parse_args(argv)
 
-    if argv:
-        files = [Path(a).resolve() for a in argv]
+    if args.files:
+        files = [Path(a).resolve() for a in args.files]
     else:
         files = iter_request_files()
 
@@ -174,9 +240,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("No request files found under data-managers/ - nothing to lint.")
         return 0
 
+    tool_schemas = None if args.no_tool_schemas else SchemaSource(fetch=not args.no_fetch)
     all_errors: list[str] = []
     for path in files:
-        errs = lint_file(path)
+        errs = lint_file(path, tool_schemas)
         if errs:
             all_errors.extend(errs)
         else:

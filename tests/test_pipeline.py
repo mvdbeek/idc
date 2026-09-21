@@ -5,6 +5,7 @@ generation (+ gxformat2 validation), bundle-URL resolution from an invocation,
 and the CVMFS import command assembly / record idempotency. No Galaxy or
 toolshed access is required.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -16,9 +17,24 @@ sys.path.insert(0, str(SCRIPTS))
 
 import check_data_exists as cde  # noqa: E402
 import generate_build as gb  # noqa: E402
+import generate_schema as gs  # noqa: E402
 import get_bundle_urls as gburls  # noqa: E402
 import import_bundles as imp  # noqa: E402
 import request_models as rm  # noqa: E402
+import tool_schemas as tsch  # noqa: E402
+
+# Tool Shed parameter_request_schema responses, saved verbatim for every GUID the
+# seed requests use (tests/fixtures/tool_schemas/<owner>~<repo>~<tool>~<version>.json).
+FIXTURE_SCHEMAS = REPO_ROOT / "tests/fixtures/tool_schemas"
+
+
+def fixture_schema(guid: str) -> dict:
+    """A SchemaResolver over the saved Tool Shed responses - no network."""
+    trs_id, version = tsch.trs_id_and_version(guid)
+    path = FIXTURE_SCHEMAS / f"{trs_id}~{version}.json"
+    if not path.is_file():
+        raise tsch.SchemaUnavailable(f"no fixture for {guid}")
+    return tsch.contributor_schema(json.loads(path.read_text()))
 
 SEEDS = {
     "metaphlan": REPO_ROOT / "data-managers/metaphlan_database_versioned/mpa_vJan21_CHOCOPhlAnSGB_202103.yaml",
@@ -32,7 +48,13 @@ SEEDS = {
 # --------------------------------------------------------------------------- #
 def test_seed_requests_lint_clean():
     for path in SEEDS.values():
-        assert rm.lint_file(path) == [], path
+        assert rm.lint_file(path, fixture_schema) == [], path
+
+
+def test_every_request_file_lints_clean_against_its_tool_schema():
+    # Also covers request files added after the SEEDS dict was written.
+    for path in rm.iter_request_files():
+        assert rm.lint_file(path, fixture_schema) == [], path
 
 
 def test_tool_id_must_be_version_pinned():
@@ -53,14 +75,186 @@ def test_request_rejects_unimplemented_checksum_field():
         )
 
 
-def test_lint_rejects_dir_table_mismatch(tmp_path):
-    p = rm.DATA_MANAGERS_DIR / "motus_db_versioned" / "_probe.yaml"
+def test_lint_rejects_dir_table_mismatch(isolated_requests):
+    p = isolated_requests / "motus_db_versioned" / "probe.yaml"
+    p.parent.mkdir()
     p.write_text("tool_id: toolshed.g2.bx.psu.edu/repos/iuc/a/b/1\ndata_tables: [other]\n")
-    try:
-        errors = rm.lint_file(p)
-    finally:
-        p.unlink()
+    errors = rm.lint_file(p)
     assert any("directory name" in e for e in errors)
+
+
+# --------------------------------------------------------------------------- #
+# tool_schemas / generate_schema: params are checked against the data manager
+# --------------------------------------------------------------------------- #
+MOTUS_GUID = "toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy2"
+SAMESTR_GUID = "toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy4"
+
+
+@pytest.fixture
+def isolated_requests(tmp_path, monkeypatch):
+    """Point the linter at an empty data-managers/ tree so probe files never touch the real one."""
+    root = tmp_path / "data-managers"
+    root.mkdir()
+    monkeypatch.setattr(rm, "DATA_MANAGERS_DIR", root)
+    monkeypatch.setattr(rm, "REPO_ROOT", tmp_path)
+    return root
+
+
+def test_guid_maps_to_tool_shed_schema_url():
+    assert tsch.schema_url(MOTUS_GUID) == (
+        "https://toolshed.g2.bx.psu.edu/api/tools/bgruening~data_manager_motus~motus_db_fetcher"
+        "/versions/3.1.0+galaxy2/parameter_request_schema"
+    )
+    with pytest.raises(ValueError):
+        tsch.schema_url("toolshed.g2.bx.psu.edu/repos/iuc/repo/tool")
+    # $defs names must not contain JSON Pointer escape characters (~1 reads as /).
+    assert "~" not in tsch.def_name(MOTUS_GUID) and "/" not in tsch.def_name(MOTUS_GUID)
+
+
+def test_contributor_schema_drops_hidden_params_at_every_level():
+    raw = json.loads((FIXTURE_SCHEMAS / "bgruening~data_manager_motus~motus_db_fetcher~3.1.0+galaxy2.json").read_text())
+    assert raw["properties"]["test_data_manager"]["gx_type"] == "gx_hidden"
+    assert raw["required"] == ["test_data_manager"]  # unsatisfiable from a request file
+    schema = tsch.contributor_schema(raw)
+    assert set(schema["properties"]) == {"version", "db_value"}
+    assert "required" not in schema
+    assert schema["additionalProperties"] is False
+    # Nested (a hidden param inside a conditional branch) and $id/$schema are handled too.
+    nested = {
+        "$schema": "x",
+        "$id": "y",
+        "properties": {"c": {"$ref": "#/$defs/W"}},
+        "$defs": {"W": {"properties": {"h": {"gx_type": "gx_hidden"}, "k": {"type": "string"}}, "required": ["h", "k"]}},
+    }
+    out = tsch.contributor_schema(nested)
+    assert out["$defs"]["W"] == {"properties": {"k": {"type": "string"}}, "required": ["k"]}
+    assert "$id" not in out and "$schema" not in out
+
+
+def test_embedding_a_conditional_schema_keeps_its_refs_resolvable():
+    name = tsch.def_name(SAMESTR_GUID)
+    standalone = fixture_schema(SAMESTR_GUID)
+    embedded = tsch.embed(standalone, name)
+    assert embedded["properties"]["db_source"]["$ref"] == f"#/$defs/{name}/$defs/ConditionalType"
+    mapping = embedded["$defs"]["ConditionalType"]["discriminator"]["mapping"]
+    assert mapping["motus"] == f"#/$defs/{name}/$defs/When_db_type_motus"
+    assert tsch.unembed(embedded, name) == standalone
+    # Validation through the parent document reaches the conditional's branches.
+    import jsonschema
+
+    parent = {"$defs": {name: embedded}, "properties": {"params": {"$ref": f"#/$defs/{name}"}}}
+    v = jsonschema.Draft202012Validator(parent)
+    assert list(v.iter_errors({"params": {"db_source": {"db_type": "motus"}}})) == []
+    assert list(v.iter_errors({"params": {"db_source": {"db_type": "kraken"}}})) != []
+    # Every local pointer in the committed schema resolves.
+    committed = json.loads(tsch.COMMITTED_SCHEMA.read_text())
+    resolver = jsonschema.Draft202012Validator(committed)._resolver
+    for ref in _local_refs(committed):
+        resolver.lookup(ref)
+
+
+def _local_refs(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "$ref" and isinstance(v, str):
+                yield v
+            elif k == "discriminator" and isinstance(v, dict):
+                yield from (m for m in v.get("mapping", {}).values() if isinstance(m, str))
+            else:
+                yield from _local_refs(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _local_refs(v)
+
+
+def test_embed_refuses_refs_it_cannot_relocate():
+    for ref in ("#", "#ConditionalType", "ConditionalType", "other.json#/$defs/X"):
+        with pytest.raises(ValueError, match="unsupported"):
+            tsch.embed({"properties": {"a": {"$ref": ref}}}, "n")
+
+
+def test_flatten_params_produces_galaxy_paths():
+    assert tsch.flatten_params({"a": {"b": 1, "c": {"d": 2}}, "e": 3}) == {"a|b": 1, "a|c|d": 2, "e": 3}
+    assert tsch.flatten_params({}) == {}
+
+
+def test_params_validation_accepts_real_requests_and_rejects_mistakes():
+    motus = fixture_schema(MOTUS_GUID)
+    assert tsch.validate_params(motus, {"version": "3.1.0", "db_value": "db_from_2026-04-27T094930Z"}) == []
+    assert tsch.validate_params(motus, {}) == []
+    [err] = tsch.validate_params(motus, {"version": "9.9.9"})
+    assert err == "version: '9.9.9' is not one of ['3.1.0', '3.0.1', '3.0.0']"
+    [err] = tsch.validate_params(motus, {"verison": "3.1.0"})
+    assert err.startswith("Additional properties are not allowed ('verison' was unexpected)")
+    assert err.endswith("this tool's parameters here are ['db_value', 'version']")
+    [err] = tsch.validate_params(motus, {"db_value": 5})
+    assert err.startswith("db_value: 5 is not")
+
+    samestr = fixture_schema(SAMESTR_GUID)
+    assert tsch.validate_params(samestr, {"db_source": {"db_type": "motus"}}) == []
+    assert tsch.validate_params(samestr, {"db_source": {"db_type": "metaphlan", "database": "x"}}) == []
+    [err] = tsch.validate_params(samestr, {"db_source": {"db_type": "kraken"}})
+    assert err == "db_source: db_type: 'kraken' is not one of ['metaphlan', 'motus']"
+    [err] = tsch.validate_params(samestr, {"db_source": {"db_type": "motus", "database": "x"}})
+    assert "'database' was unexpected" in err and "['db_type', 'motus_db']" in err
+    # The flat spelling is rejected with a hint, not silently accepted.
+    [err] = tsch.validate_params(samestr, {"db_source|db_type": "motus"})
+    assert err == "key 'db_source|db_type': write nested parameters as mappings (db_source: {db_type: ...}), not with '|'"
+
+
+def test_lint_reports_bad_params_and_unavailable_schema(isolated_requests):
+    p = isolated_requests / "motus_db_versioned" / "probe.yaml"
+    p.parent.mkdir()
+    p.write_text(f"tool_id: {MOTUS_GUID}\ndata_tables: [motus_db_versioned]\nparams:\n  verison: '3.1.0'\n")
+    errors = rm.lint_file(p, fixture_schema)
+    assert len(errors) == 1 and "params: Additional properties are not allowed ('verison'" in errors[0], errors
+    # Same file, no schema check requested: only structural lint.
+    assert rm.lint_file(p) == []
+
+    def unavailable(guid):
+        raise tsch.SchemaUnavailable("the Tool Shed answered HTTP 503")
+
+    [err] = rm.lint_file(p, unavailable)
+    assert "cannot check params" in err and "HTTP 503" in err
+
+
+def test_model_rejects_empty_data_tables():
+    with pytest.raises(Exception):
+        rm.Request(tool_id=MOTUS_GUID, data_tables=[])
+
+
+def test_schema_source_prefers_committed_defs_and_can_refuse_to_fetch(tmp_path):
+    committed = tmp_path / "request.schema.json"
+    name = tsch.def_name(MOTUS_GUID)
+    committed.write_text(json.dumps({"$defs": {name: tsch.embed(fixture_schema(MOTUS_GUID), name)}}))
+    src = tsch.SchemaSource(committed=committed, fetch=False)
+    assert src(MOTUS_GUID) == fixture_schema(MOTUS_GUID)  # un-embedded back to standalone form
+    with pytest.raises(tsch.SchemaUnavailable, match="generate_schema.py"):
+        src(SAMESTR_GUID)
+
+
+def test_committed_request_schema_is_current():
+    """schemas/request.schema.json == model + the saved Tool Shed schemas of every GUID in use."""
+    expected = gs.render(gs.build_schema(gs.tool_ids_in_use(), fixture_schema))
+    assert tsch.COMMITTED_SCHEMA.read_text() == expected, "run: python scripts/generate_schema.py"
+
+
+def test_committed_request_schema_validates_the_request_files_as_editors_would():
+    import jsonschema
+
+    schema = json.loads(tsch.COMMITTED_SCHEMA.read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    for path in rm.iter_request_files():
+        doc = rm.yaml.safe_load(path.read_text())  # exactly as written, no transformation
+        assert list(validator.iter_errors(doc)) == [], path
+    # The if/then splice is live: a wrong param for this tool_id fails at the document level.
+    bad = {"tool_id": MOTUS_GUID, "data_tables": ["motus_db_versioned"], "params": {"version": "9.9.9"}}
+    assert list(validator.iter_errors(bad)) != []
+    chained = {"tool_id": SAMESTR_GUID, "data_tables": ["samestr_db"], "params": {"db_source": {"db_type": "motus"}}}
+    assert list(validator.iter_errors(chained)) == []
+    unpinned = {"tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/repo/tool", "data_tables": ["t"]}
+    assert any(e.validator == "pattern" for e in validator.iter_errors(unpinned))
+    assert any(e.validator == "minItems" for e in validator.iter_errors({"tool_id": MOTUS_GUID, "data_tables": []}))
 
 
 # --------------------------------------------------------------------------- #

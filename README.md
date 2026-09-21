@@ -217,20 +217,43 @@ its owner are searchable on the Tool Shed:
 curl -s 'https://toolshed.g2.bx.psu.edu/api/repositories?name=data_manager_motus&owner=bgruening'
 ```
 
-`params` keys are the `name=` attributes of the tool's `<param>` tags, with
-nested ones joined by `|` (`db_source|db_type`). Read them from the tool XML —
-Galaxy's `/api/tools/<id>?io_details=true` will not help here, because data
-managers are admin-only tools and the endpoint returns 401 for anonymous users.
+`params` are the tool's own parameters, keyed by the `name=` of its `<param>`
+tags and nested like the tool form (a `<conditional name="db_source">` holding
+`db_type` is `db_source: {db_type: motus}`). The Tool Shed publishes every tool
+version's parameter schema; the lint checks `params` against it, so a name the
+tool does not have, a select value it does not offer, or a value of the wrong
+type fails the PR with the allowed names/values in the message. To see what a
+tool accepts, ask by its GUID:
 
-Note that `params` names and values are **not** validated by the lint today: a
-name the tool does not have is not rejected, it just silently fails to steer the
-build. Check them against the XML, and check the built entry afterwards with
-`--expect-exists` (see below).
+```bash
+python scripts/tool_schemas.py toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy2
+```
+
+(The tool XML is the fallback if you prefer reading it; Galaxy's own
+`/api/tools/<id>?io_details=true` will not help, because data managers are
+admin-only tools and it returns 401 for anonymous users.)
+
+Editors get the same thing live. Every request file starts with a
+`# yaml-language-server: $schema=...` line pointing at
+[`schemas/request.schema.json`](schemas/request.schema.json), which VS Code
+(Red Hat YAML extension) and JetBrains IDEs pick up for completion, hover
+documentation and inline errors - including `params` names and values for
+every `tool_id` already in use. Keep that line when you copy an example. The
+file is generated: after adding a request with a **new** `tool_id`, run
+
+```bash
+python scripts/generate_schema.py
+```
+
+and commit the updated schema (CI fails with "stale" otherwise). The modeline
+points at `main`, so completion for a brand-new `tool_id` appears once your
+PR is merged; the lint checks it right away either way.
 
 ### What happens to your PR
 
 1. **Lint** (GitHub Actions, on the PR): `scripts/request_models.py` validates the
-   request (version-pinned GUID, folder/table match, `depends_on` resolves) and
+   request (version-pinned GUID, folder/table match, `depends_on` resolves,
+   `params` against the data manager's parameter schema from the Tool Shed) and
    gxformat2-validates the workflow it generates. `scripts/check_data_exists.py`
    additionally warns if the requested data already exists (see below).
 2. **Build** (GitHub Actions, on merge to `main`): `scripts/generate_build.py`
@@ -320,8 +343,11 @@ To onboard a data manager that isn't used yet:
 ### Testing locally
 
 ```bash
-pip install "pydantic>=2" pyyaml gxformat2 pytest
-python scripts/request_models.py                 # lint all requests
+pip install "pydantic>=2" pyyaml jsonschema gxformat2 pytest
+python scripts/request_models.py                 # lint all requests (params checked against the tool)
+python scripts/request_models.py --no-fetch      # offline: params checked only for tool_ids already in the schema
+python scripts/request_models.py --no-tool-schemas   # offline: structural lint only
+python scripts/generate_schema.py --check --refresh   # editor schema == model + what the Tool Shed serves?
 python scripts/generate_build.py --all --outdir build   # generate + gxformat2-validate
 pytest tests/                                    # pipeline unit tests
 ```
