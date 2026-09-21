@@ -3,8 +3,8 @@ name: Build reference-data bundles
 # Stage 2 of the IDC reference-data pipeline: when a request is merged to main,
 # generate its data-manager-bundle workflow and run it on test.galaxyproject.org
 # (via planemo). The build runs asynchronously (--no_wait); the resulting bundle
-# datasets live in a history named idc-<dm>-<version>, which Stage 3 (Jenkins)
-# later imports onto CVMFS.
+# datasets live in a history named idc-<dm>-<version>, which Stage 3
+# (deploy.yml, run manually once the build is green) later imports onto CVMFS.
 #
 # Requires the repository secret TEST_API_KEY (a test.galaxyproject.org API key).
 

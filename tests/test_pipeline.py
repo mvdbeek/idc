@@ -236,6 +236,8 @@ class _FakeGi:
         self._invocations = invocations
         self._invocation_detail = invocation_detail
         self._datasets = datasets or []
+        # dataset id -> state for show_dataset (default "ok")
+        self.dataset_states: dict[str, str] = {}
 
         outer = self
 
@@ -253,6 +255,9 @@ class _FakeGi:
         class _Datasets:
             def get_datasets(self, history_id, extension, order):
                 return outer._datasets
+
+            def show_dataset(self, dataset_id):
+                return {"id": dataset_id, "state": outer.dataset_states.get(dataset_id, "ok")}
 
         self.histories = _Histories()
         self.invocations = _Invocations()
@@ -385,3 +390,18 @@ def test_import_without_request_imports_every_bundle(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "# import motus_db_versioned_bundle" in out
     assert "# import samestr_db_bundle" in out
+
+
+def test_import_refuses_bundles_that_are_not_ok(tmp_path, capsys):
+    """Resolving from a live Galaxy checks dataset states: a still-running or
+    failed build must fail the import rather than publish a partial bundle."""
+    gi = _FakeGi(
+        invocations=[{"id": "inv1", "create_time": "2026-09-20T17:50:00"}],
+        invocation_detail={"outputs": {"motus_db_versioned_bundle": {"id": "dsMOTUS", "src": "hda"}}},
+    )
+    gi.dataset_states["dsMOTUS"] = "running"
+    with pytest.raises(SystemExit, match="motus_db_versioned_bundle is 'running'"):
+        imp.check_bundles_ready(gi, gburls.bundles_from_history(gi, "idc-motus_db_versioned-3.1.0"))
+
+    gi.dataset_states["dsMOTUS"] = "ok"
+    imp.check_bundles_ready(gi, {"motus_db_versioned_bundle": "dsMOTUS"})  # no raise

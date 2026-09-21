@@ -349,7 +349,11 @@ function start_ssh_control() {
     log "Starting SSH control connection to Stratum 0"
     SSH_MASTER_SOCKET="${SSH_MASTER_SOCKET_DIR}/ssh-tunnel-${REPO_USER}-${REPO_STRATUM0}.sock"
     log_exec mkdir -p "$SSH_MASTER_SOCKET_DIR"
-    log_exec ssh -M -S "$SSH_MASTER_SOCKET" -Nfn -l "$REPO_USER" "$REPO_STRATUM0"
+    # StrictHostKeyChecking=yes: an absent or changed Stratum 0 host key stops
+    # the deploy instead of prompting (non-interactive runs would fail anyway).
+    # ConnectTimeout: fail fast when the Stratum 0 is unreachable rather than
+    # hanging until the job times out.
+    log_exec ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=30 -M -S "$SSH_MASTER_SOCKET" -Nfn -l "$REPO_USER" "$REPO_STRATUM0"
     USER_UID=$(exec_on id -u)
     USER_GID=$(exec_on id -g)
     SSH_MASTER_UP=true
@@ -832,4 +836,8 @@ function main() {
 }
 
 
-main
+# .ci/github-actions.sh sources this file for its functions and runs its own,
+# reference-data-only entry point; only run main when executed directly.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main
+fi

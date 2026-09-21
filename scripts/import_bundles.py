@@ -78,20 +78,44 @@ def _galaxy_connection(args):
     return GalaxyInstance(url=args.galaxy_url, key=api_key)
 
 
+def check_bundles_ready(gi, bundles: dict[str, str]) -> None:
+    """Refuse bundles whose dataset is not ``ok``.
+
+    A build runs for hours after its request merges; importing a bundle that is
+    still being produced (or whose job failed) would publish an empty or broken
+    database. Fail loudly instead so the publish can be retried later.
+    """
+    not_ready = {}
+    for label, dataset_id in bundles.items():
+        state = gi.datasets.show_dataset(dataset_id).get("state")
+        if state != "ok":
+            not_ready[label] = state
+    if not_ready:
+        detail = ", ".join(f"{label} is {state!r}" for label, state in not_ready.items())
+        raise SystemExit(f"Build not finished or failed - refusing to import: {detail}")
+
+
 def resolve_bundles(args) -> dict[str, str]:
-    """Map bundle label -> dataset id, from whichever source was given."""
+    """Map bundle label -> dataset id, from whichever source was given.
+
+    Bundles resolved from a live Galaxy are checked to be in the ``ok`` state;
+    an offline ``--invocation-json`` is taken as-is.
+    """
     if args.invocation_json:
         import json
 
         with open(args.invocation_json) as fh:
             invocation = json.load(fh)
         return bundle_dataset_ids_from_invocation(invocation, suffix=args.bundle_suffix)
+    gi = _galaxy_connection(args)
     if args.invocation_id:
-        gi = _galaxy_connection(args)
         invocation = gi.invocations.show_invocation(args.invocation_id)
-        return bundle_dataset_ids_from_invocation(invocation, suffix=args.bundle_suffix)
-    # history-name fallback (the stable key shared by the build and import stages)
-    return bundles_from_history(_galaxy_connection(args), args.history_name)
+        bundles = bundle_dataset_ids_from_invocation(invocation, suffix=args.bundle_suffix)
+    else:
+        # history-name fallback (the stable key shared by the build and import stages)
+        bundles = bundles_from_history(gi, args.history_name)
+    check_bundles_ready(gi, bundles)
+    return bundles
 
 
 def _parser() -> argparse.ArgumentParser:

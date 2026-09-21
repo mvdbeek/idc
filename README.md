@@ -130,7 +130,7 @@ the IDC supports **versioned reference databases** built by data managers — e.
 `metaphlan_database_versioned`, `motus_db_versioned`, `samestr_db`. Each requested
 version is built by running a Galaxy **data-manager-bundle workflow** on
 [test.galaxyproject.org](https://test.galaxyproject.org), and the resulting
-bundle is imported onto CVMFS by Jenkins.
+bundle is imported onto CVMFS by the publish workflow (or Jenkins).
 
 ### How to request a new reference-data version
 
@@ -188,10 +188,13 @@ description: SameStr marker database derived from MetaPhlAn mpa_vJan21
    `planemo run` executes it on test.galaxyproject.org into a history named
    `idc-<data_manager>-<version>`. Each data manager runs in
    `__data_manager_mode: bundle`, producing a downloadable bundle dataset.
-3. **Import** (Jenkins): the bundle(s) are resolved from the build's workflow
-   invocation and imported onto CVMFS with `galaxy-import-data-bundle`
-   (`.ci/import_reference_data.sh` / `.ci/jenkins.sh`), recording
-   `record/<data_manager>/<version>` for idempotency.
+3. **Import** (GitHub Actions, manual; Jenkins as fallback): once the build
+   history is green, *Actions → Publish reference data to CVMFS* resolves the
+   bundle(s) from the build's workflow invocation and imports them onto CVMFS
+   with `galaxy-import-data-bundle` (`.ci/github-actions.sh`, or
+   `@galaxybot deploy reference-data` on Jenkins via `.ci/jenkins.sh`),
+   recording `record/<data_manager>/<version>` for idempotency. See
+   `docs/cvmfs-publish-actions.md`.
 
 ### Avoiding rebuilds of existing data ("does this already exist?")
 
