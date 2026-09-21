@@ -249,6 +249,18 @@ and commit the updated schema (CI fails with "stale" otherwise). The modeline
 points at `main`, so completion for a brand-new `tool_id` appears once your
 PR is merged; the lint checks it right away either way.
 
+Completion also covers every data manager installed on the build Galaxy, not
+just those with a request: [`schemas/data_managers.yml`](schemas/data_managers.yml)
+lists them, resolved from usegalaxy-tools' `data_managers.yml.lock` to the
+GUID of each latest installed revision. Maintainers refresh it after the
+installed set changes with
+
+```bash
+python scripts/generate_schema.py --from-lock https://raw.githubusercontent.com/galaxyproject/usegalaxy-tools/master/test.galaxyproject.org/data_managers.yml.lock
+```
+
+and commit both files it rewrites.
+
 ### What happens to your PR
 
 1. **Lint** (GitHub Actions, on the PR): `scripts/request_models.py` validates the

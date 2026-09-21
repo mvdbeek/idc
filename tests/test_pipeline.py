@@ -111,7 +111,7 @@ def test_guid_maps_to_tool_shed_schema_url():
     assert "~" not in tsch.def_name(MOTUS_GUID) and "/" not in tsch.def_name(MOTUS_GUID)
 
 
-def test_contributor_schema_drops_hidden_params_at_every_level():
+def test_contributor_schema_drops_unsettable_params_at_every_level():
     raw = json.loads((FIXTURE_SCHEMAS / "bgruening~data_manager_motus~motus_db_fetcher~3.1.0+galaxy2.json").read_text())
     assert raw["properties"]["test_data_manager"]["gx_type"] == "gx_hidden"
     assert raw["required"] == ["test_data_manager"]  # unsatisfiable from a request file
@@ -129,6 +129,9 @@ def test_contributor_schema_drops_hidden_params_at_every_level():
     out = tsch.contributor_schema(nested)
     assert out["$defs"]["W"] == {"properties": {"k": {"type": "string"}}, "required": ["k"]}
     assert "$id" not in out and "$schema" not in out
+    # Dataset/collection inputs come from workflow connections, never from params.
+    data = {"properties": {"fasta": {"gx_type": "gx_data"}, "reads": {"gx_type": "gx_data_collection"}, "k": {}}}
+    assert list(tsch.contributor_schema(data)["properties"]) == ["k"]
 
 
 def test_embedding_a_conditional_schema_keeps_its_refs_resolvable():
@@ -148,23 +151,12 @@ def test_embedding_a_conditional_schema_keeps_its_refs_resolvable():
     assert list(v.iter_errors({"params": {"db_source": {"db_type": "kraken"}}})) != []
     # Every local pointer in the committed schema resolves.
     committed = json.loads(tsch.COMMITTED_SCHEMA.read_text())
+    assert tsch.unresolvable_refs(committed) == []
     resolver = jsonschema.Draft202012Validator(committed)._resolver
-    for ref in _local_refs(committed):
+    for ref in tsch.local_refs(committed):
         resolver.lookup(ref)
-
-
-def _local_refs(node):
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if k == "$ref" and isinstance(v, str):
-                yield v
-            elif k == "discriminator" and isinstance(v, dict):
-                yield from (m for m in v.get("mapping", {}).values() if isinstance(m, str))
-            else:
-                yield from _local_refs(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _local_refs(v)
+    # And the detector sees what the server sometimes leaves behind.
+    assert tsch.unresolvable_refs({"properties": {"a": {"$ref": "#/components/schemas/X"}}}) == ["#/components/schemas/X"]
 
 
 def test_embed_refuses_refs_it_cannot_relocate():
@@ -234,9 +226,24 @@ def test_schema_source_prefers_committed_defs_and_can_refuse_to_fetch(tmp_path):
 
 
 def test_committed_request_schema_is_current():
-    """schemas/request.schema.json == model + the saved Tool Shed schemas of every GUID in use."""
-    expected = gs.render(gs.build_schema(gs.tool_ids_in_use(), fixture_schema))
+    """schemas/request.schema.json == model + tool schemas: fixtures for the GUIDs in use, committed for the rest.
+
+    The installed-data-manager GUIDs (schemas/data_managers.yml) have no fixtures,
+    so their $defs are taken from the committed file itself; CI's
+    ``generate_schema.py --check --refresh`` is what verifies those against the
+    Tool Shed. Here the model part and every request file's tool are covered.
+    """
+    committed = tsch.SchemaSource(fetch=False)
+
+    def resolve(guid):
+        try:
+            return fixture_schema(guid)
+        except tsch.SchemaUnavailable:
+            return committed(guid)
+
+    expected = gs.render(gs.build_schema(gs.all_tool_ids(), resolve, required=set(gs.tool_ids_in_use())))
     assert tsch.COMMITTED_SCHEMA.read_text() == expected, "run: python scripts/generate_schema.py"
+    assert set(gs.tool_ids_in_use()) <= set(gs.all_tool_ids())
 
 
 def test_committed_request_schema_validates_the_request_files_as_editors_would():

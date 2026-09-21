@@ -94,16 +94,65 @@ def fetch_request_schema(guid: str, tool_shed: str = TOOL_SHED) -> dict:
         raise SchemaUnavailable(f"the Tool Shed could not be reached: {exc} ({url})") from exc
 
 
-def _strip_hidden(node: Any) -> Any:
-    """Recursively drop ``gx_hidden`` properties (and their ``required`` entries) from every object schema."""
+def _get_json(url: str) -> Any:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 (fixed https host)
+        return json.load(resp)
+
+
+def repository_tool_ids(owner: str, name: str, revisions: list[str], tool_shed: str = TOOL_SHED) -> tuple[str, list[str]]:
+    """(latest of ``revisions`` per the Tool Shed's ordering, its tools' GUIDs).
+
+    Resolves what an installed repository (e.g. one entry of a usegalaxy-tools
+    ``data_managers.yml.lock``) means in GUID terms. Raises SchemaUnavailable
+    if the repository or none of the revisions is known to the Tool Shed.
+    """
+    base = tool_shed.rstrip("/")
+    try:
+        repos = _get_json(f"{base}/api/repositories?name={urllib.parse.quote(name)}&owner={urllib.parse.quote(owner)}")
+        if not repos:
+            raise SchemaUnavailable(f"the Tool Shed has no repository {owner}/{name}")
+        metadata = _get_json(f"{base}/api/repositories/{repos[0]['id']}/metadata")
+    except SchemaUnavailable:
+        raise
+    except Exception as exc:
+        raise SchemaUnavailable(f"could not resolve {owner}/{name} on the Tool Shed: {exc}") from exc
+    # metadata keys are "<order>:<changeset>"; the highest order among the wanted revisions wins.
+    wanted = set(revisions)
+    ordered = sorted(((int(k.split(":")[0]), k.split(":")[1], v) for k, v in metadata.items()), reverse=True)
+    if not ordered:
+        raise SchemaUnavailable(f"{owner}/{name} has no installable revision on the Tool Shed")
+    for _, rev, entry in ordered:
+        if rev in wanted:
+            return rev, sorted(t["guid"] for t in entry.get("tools", []) if t.get("guid"))
+    # An installed changeset can fall out of the Tool Shed's metadata list when
+    # the repository is updated within the same metadata revision. The newest
+    # installable revision is then the closest thing to "what is installed".
+    _, rev, entry = ordered[0]
+    print(
+        f"::warning:: {owner}/{name}: locked revision(s) {sorted(wanted)} are not known to the Tool Shed; "
+        f"using its latest installable revision {rev}",
+        file=sys.stderr,
+    )
+    return rev, sorted(t["guid"] for t in entry.get("tools", []) if t.get("guid"))
+
+
+# Parameter types a request file cannot set. Hidden params are filled by Galaxy;
+# datasets and collections arrive through workflow connections (the upstream
+# bundle of a chained build), never as a string in params.
+UNSETTABLE_TYPES = {"gx_hidden", "gx_data", "gx_data_collection"}
+
+
+def _strip_unsettable(node: Any) -> Any:
+    """Recursively drop unsettable properties (and their ``required`` entries) from every object schema."""
     if isinstance(node, list):
-        return [_strip_hidden(v) for v in node]
+        return [_strip_unsettable(v) for v in node]
     if not isinstance(node, dict):
         return node
-    out = {k: _strip_hidden(v) for k, v in node.items()}
+    out = {k: _strip_unsettable(v) for k, v in node.items()}
     props = out.get("properties")
     if isinstance(props, dict):
-        hidden = [k for k, v in props.items() if isinstance(v, dict) and v.get("gx_type") == "gx_hidden"]
+        hidden = [k for k, v in props.items() if isinstance(v, dict) and v.get("gx_type") in UNSETTABLE_TYPES]
         for k in hidden:
             props.pop(k)
         if hidden and isinstance(out.get("required"), list):
@@ -118,15 +167,44 @@ def contributor_schema(schema: dict) -> dict:
 
     Hidden params are filled by Galaxy at run time, but the request model lists
     them as required - and one without a static default (motus's
-    ``test_data_manager``) can never be satisfied from a request file. They are
+    ``test_data_manager``) can never be satisfied from a request file. Dataset
+    and collection inputs come from workflow connections, not params. Both are
     stripped at every level (conditional branches and sections included).
     ``$schema``/``$id`` go too: the schema is spliced into a parent document and
     must not establish its own resource.
     """
-    out = _strip_hidden(json.loads(json.dumps(schema)))
+    out = _strip_unsettable(json.loads(json.dumps(schema)))
     out.pop("$schema", None)
     out.pop("$id", None)
-    return out
+    return _prune_unreferenced_defs(out)
+
+
+def _prune_unreferenced_defs(schema: dict) -> dict:
+    """Drop ``$defs`` nothing reaches any more.
+
+    Stripping a dataset input leaves behind Galaxy's whole data-request model
+    (DataRequestHda, BatchRequest, ...) - a large, irrelevant subtree that also
+    carries OpenAPI-style ``#/components/schemas/...`` discriminator targets
+    which a plain JSON Schema cannot resolve.
+    """
+    defs = schema.get("$defs")
+    if not isinstance(defs, dict):
+        return schema
+    reachable: set[str] = set()
+    frontier = [ref for ref in local_refs({k: v for k, v in schema.items() if k != "$defs"})]
+    while frontier:
+        ref = frontier.pop()
+        if not ref.startswith("#/$defs/"):
+            continue
+        name = ref[len("#/$defs/"):].split("/")[0]
+        if name in reachable or name not in defs:
+            continue
+        reachable.add(name)
+        frontier.extend(local_refs(defs[name]))
+    schema["$defs"] = {k: v for k, v in defs.items() if k in reachable}
+    if not schema["$defs"]:
+        schema.pop("$defs")
+    return schema
 
 
 def _rewrite_refs(node: Any, old: str, new: str) -> Any:
@@ -171,6 +249,38 @@ def embed(schema: dict, name: str) -> dict:
 
 def unembed(schema: dict, name: str) -> dict:
     return _rewrite_refs(schema, f"#/$defs/{name}/", "#/")
+
+
+def local_refs(node: Any):
+    """Every local ``$ref`` / ``discriminator.mapping`` target in a schema (JSON Pointers)."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "$ref" and isinstance(v, str):
+                yield v
+            elif k == "discriminator" and isinstance(v, dict):
+                yield from (m for m in v.get("mapping", {}).values() if isinstance(m, str))
+            else:
+                yield from local_refs(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from local_refs(v)
+
+
+def unresolvable_refs(schema: dict) -> list[str]:
+    """Local pointers in ``schema`` that point nowhere (e.g. an OpenAPI ``#/components/...`` left by the server)."""
+    bad = []
+    for ref in local_refs(schema):
+        if not ref.startswith("#/"):
+            bad.append(ref)
+            continue
+        node: Any = schema
+        for part in ref[2:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                bad.append(ref)
+                break
+    return sorted(set(bad))
 
 
 def flatten_params(params: dict, prefix: str = "") -> dict:
