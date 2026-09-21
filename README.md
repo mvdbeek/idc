@@ -154,29 +154,35 @@ to work: an unparameterised "fetch the current release" data manager is requeste
 with `params: {}`, and the date in the identity is what distinguishes one build
 from the next.
 
-**Standalone request** (a self-contained download/build), e.g.
+The two requests below are the real files in this repo, which are the source of
+truth if this section ever drifts from them.
+
+**Standalone request** (a self-contained download/build),
 `data-managers/motus_db_versioned/3.1.0.yaml`:
 
 ```yaml
 # Full, version-pinned Tool Shed GUID of the data manager tool (required).
-tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy0
+tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy2
 # Data table(s) the data manager populates (required).
 data_tables: [motus_db_versioned]
 # Tool parameters for this build. Each becomes a workflow input (use "|" for
 # nested/conditional params, e.g. "db|build").
 params:
-  version: "3.1.0"
+  version: "3.1.0"   # the tool's "Database Version" select param
+  # Pin the identifier to usegalaxy.eu's existing entry (the +galaxy2 DM defaults
+  # to db_from_<Zenodo publication date>; override it so idc matches usegalaxy.eu).
+  db_value: "db_from_2026-04-27T094930Z"
 # Optional, human-facing provenance:
 description: mOTUs profiler database, version 3.1.0
 doi:
 ```
 
-**Chained request** (a data manager that builds from another database), e.g.
+**Chained request** (a data manager that builds from another database),
 `data-managers/samestr_db/marker_db_mpa_vJan21.yaml` — SameStr builds from a
 MetaPhlAn database:
 
 ```yaml
-tool_id: toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy1
+tool_id: toolshed.g2.bx.psu.edu/repos/iuc/data_manager_samestr/samestr_db/1.2025.111+galaxy3
 data_tables: [samestr_db]
 # The upstream table -> version this build depends on. A request file must exist
 # at data-managers/metaphlan_database_versioned/<version>.yaml so it is built
@@ -184,8 +190,42 @@ data_tables: [samestr_db]
 depends_on:
   metaphlan_database_versioned: mpa_vJan21_CHOCOPhlAnSGB_202103
 params: {}
-description: SameStr marker database derived from MetaPhlAn mpa_vJan21
+description: SameStr marker database derived from MetaPhlAn mpa_vJan21_CHOCOPhlAnSGB_202103
 ```
+
+A chained request selects the upstream *branch* through `depends_on`, not through
+`params`: `CHAIN_WIRING` in `scripts/generate_build.py` maps the (downstream,
+upstream) pair onto the tool's conditional, which is why `samestr_db` requests
+carry `params: {}` even though the tool has a `db_source` conditional. See
+`data-managers/samestr_db/marker_db_motus_3.1.0.yaml` for the mOTUs-backed
+variant of the same data manager.
+
+### Finding the `tool_id` and the parameter names
+
+The data manager has to be installed on test.galaxyproject.org first — the
+installed set is
+[`test.galaxyproject.org/data_managers.yml`](https://github.com/galaxyproject/usegalaxy-tools/blob/master/test.galaxyproject.org/data_managers.yml)
+in usegalaxy-tools. If yours isn't listed, start from "Adding a brand-new data
+manager" below.
+
+The GUID is `toolshed.g2.bx.psu.edu/repos/<owner>/<repo>/<tool id>/<version>`,
+where `<tool id>` and `<version>` are the `id=` and `version=` attributes of the
+`<tool>` tag in the data manager's XML — not the repository name. The repo and
+its owner are searchable on the Tool Shed:
+
+```bash
+curl -s 'https://toolshed.g2.bx.psu.edu/api/repositories?name=data_manager_motus&owner=bgruening'
+```
+
+`params` keys are the `name=` attributes of the tool's `<param>` tags, with
+nested ones joined by `|` (`db_source|db_type`). Read them from the tool XML —
+Galaxy's `/api/tools/<id>?io_details=true` will not help here, because data
+managers are admin-only tools and the endpoint returns 401 for anonymous users.
+
+Note that `params` names and values are **not** validated by the lint today: a
+name the tool does not have is not rejected, it just silently fails to steer the
+build. Check them against the XML, and check the built entry afterwards with
+`--expect-exists` (see below).
 
 ### What happens to your PR
 
