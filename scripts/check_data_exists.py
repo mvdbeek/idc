@@ -5,7 +5,9 @@ The most authoritative "does this already exist?" signal is the target Galaxy's
 tool data table: ``GET /api/tool_data/<table>`` (public, no API key) lists the
 entries actually available there - from *any* source, including the byhand
 ``data.galaxyproject.org`` CVMFS - so we never rebuild or re-import data a Galaxy
-already has.
+already has. It is the pipeline's only idempotency signal, so a check that cannot
+be answered (timeout, 5xx, unparseable response) is reported as such rather than
+silently read as "not present" - see ``CheckUnavailable``.
 
 Matching the request's version to a table entry is done heuristically, because
 the identifying column differs per data manager (e.g. MetaPhlAn keys on ``dbkey``,
@@ -23,6 +25,7 @@ Usage::
 import argparse
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -39,11 +42,32 @@ from request_models import (  # noqa: E402
 DEFAULT_GALAXY = "https://test.galaxyproject.org"
 
 
-def fetch_table(galaxy_url: str, table: str) -> dict:
-    """GET /api/tool_data/<table> -> {columns, fields}. Public, no key needed."""
+class CheckUnavailable(Exception):
+    """The reference Galaxy could not be asked whether the data exists.
+
+    Distinct from a definitive "no": a timeout, a 5xx or an unparseable response
+    means we do not know. Since this check is the pipeline's only idempotency
+    signal, callers must not read it as "absent" and go build.
+    """
+
+
+def fetch_table(galaxy_url: str, table: str) -> dict | None:
+    """GET /api/tool_data/<table> -> {columns, fields}.
+
+    Returns None if the table is not configured on that Galaxy (404) - a
+    definitive "this Galaxy has no such data". Raises CheckUnavailable if the
+    question could not be answered at all. Public endpoint, no key needed.
+    """
     url = f"{galaxy_url.rstrip('/')}/api/tool_data/{table}"
-    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 (fixed https host)
-        return json.load(resp)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 (fixed https host)
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise CheckUnavailable(f"{url}: HTTP {exc.code} {exc.reason}") from exc
+    except Exception as exc:
+        raise CheckUnavailable(f"{url}: {exc}") from exc
 
 
 def identity_strings(request: Request, version: str) -> set[str]:
@@ -73,24 +97,45 @@ def resolve_existing_value(galaxy_url: str, table: str, version: str) -> str | N
     """The data-table ``value`` for an existing entry of ``version``, else None.
 
     Used to reference an already-built upstream database (e.g. a MetaPhlAn DB a
-    SameStr build depends on) instead of rebuilding it.
+    SameStr build depends on) instead of rebuilding it. CheckUnavailable
+    propagates: generating a workflow that silently rebuilds a multi-hour
+    upstream database because the Galaxy was briefly unreachable is worse than
+    failing the build step.
     """
-    try:
-        table_data = fetch_table(galaxy_url, table)
-    except Exception:
+    table_data = fetch_table(galaxy_url, table)
+    if table_data is None:
         return None
     return matching_value(table_data, {version})
 
 
 def request_exists(request: Request, version: str, galaxy_url: str) -> bool:
+    """True if any of the request's data tables already carries this version.
+
+    Raises CheckUnavailable if a table could not be queried and no other table
+    gave a positive answer - "we could not tell" must not pass for "not there".
+    """
     candidates = identity_strings(request, version)
+    unavailable: list[str] = []
     for table in request.data_tables:
         try:
             table_data = fetch_table(galaxy_url, table)
-        except Exception:
-            continue  # unknown/empty table -> treat as not-present
+        except CheckUnavailable as exc:
+            unavailable.append(str(exc))
+            continue
+        if table_data is None:
+            # Not a failure: the table simply is not configured there, which is
+            # expected for a brand-new data manager. Say so, since it means this
+            # request can never be recognised as already-built via this table.
+            print(
+                f"::warning:: data table {table!r} is not configured on {galaxy_url} - "
+                f"the existence check cannot answer from it",
+                file=sys.stderr,
+            )
+            continue
         if entry_exists(table_data, candidates):
             return True
+    if unavailable:
+        raise CheckUnavailable("; ".join(unavailable))
     return False
 
 
@@ -104,7 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--print-new",
         action="store_true",
-        help="Print (stdout) the requests whose data does NOT exist yet; always exit 0. For build/import filtering.",
+        help="Print (stdout) the requests whose data does NOT exist yet. For build/import filtering. "
+        "Exits non-zero only if the reference Galaxy could not answer for some request.",
     )
     args = parser.parse_args(argv)
 
@@ -116,25 +162,38 @@ def main(argv: list[str] | None = None) -> int:
             raw += [ln.strip() for ln in Path(args.from_file).read_text().splitlines() if ln.strip()]
         paths = [Path(r) for r in raw if Path(r).is_file()]
 
-    new, existing = [], []
+    new, existing, unknown = [], [], []
     for path in paths:
         request = Request(**yaml.safe_load(Path(path).read_text()))
         version = version_id(Path(path))
-        if request_exists(request, version, args.reference_galaxy):
-            existing.append((path, data_manager_name(Path(path)), version))
-        else:
-            new.append(path)
+        dm = data_manager_name(Path(path))
+        try:
+            found = request_exists(request, version, args.reference_galaxy)
+        except CheckUnavailable as exc:
+            unknown.append((path, dm, version, str(exc)))
+            continue
+        (existing.append((path, dm, version)) if found else new.append(path))
+
+    prefix = "::warning:: " if args.warn or args.print_new else ""
+    for path, dm, version, reason in unknown:
+        print(
+            f"{prefix}{dm}/{version}: cannot tell whether this already exists - {reason} ({path})",
+            file=sys.stderr,
+        )
 
     if args.print_new:
+        # Say what was dropped, so an empty build list is diagnosable.
+        for path, dm, version in existing:
+            print(f"skip {dm}/{version}: already exists on {args.reference_galaxy} ({path})", file=sys.stderr)
         for path in new:
             print(path)
-        return 0
+        # A question we could not answer must not silently become "build it".
+        return 1 if unknown else 0
 
     for path, dm, version in existing:
-        prefix = "::warning:: " if args.warn else ""
         print(f"{prefix}{dm}/{version} already exists on {args.reference_galaxy} ({path})", file=sys.stderr)
 
-    if not existing:
+    if not existing and not unknown:
         print(f"No requested reference data already exists on {args.reference_galaxy}.")
         return 0
     return 0 if args.warn else 1

@@ -52,12 +52,10 @@ jobs:
             git diff --name-only --diff-filter=AM "$base" "${{ github.sha }}" \
               -- 'data-managers/*/*.yml' 'data-managers/*/*.yaml' > candidates.txt || true
           fi
-          # drop requests whose version is already published (offline ledger) ...
-          python scripts/pending_requests.py --from-file candidates.txt > pending.txt
-          # ... and whose data already exists in a Galaxy data table (authoritative;
-          # e.g. already provided by the byhand CVMFS). --print-new emits only the
-          # requests that still need building.
-          python scripts/check_data_exists.py --from-file pending.txt --print-new \
+          # Drop requests whose data already exists in a Galaxy data table (the
+          # authoritative signal; covers data from any source, e.g. the byhand
+          # CVMFS). --print-new emits only the requests that still need building.
+          python scripts/check_data_exists.py --from-file candidates.txt --print-new \
             --reference-galaxy https://test.galaxyproject.org > requests.txt
           echo "Requests to build:"; cat requests.txt || true
 

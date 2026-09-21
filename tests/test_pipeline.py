@@ -18,7 +18,6 @@ import check_data_exists as cde  # noqa: E402
 import generate_build as gb  # noqa: E402
 import get_bundle_urls as gburls  # noqa: E402
 import import_bundles as imp  # noqa: E402
-import pending_requests as pr  # noqa: E402
 import request_models as rm  # noqa: E402
 
 SEEDS = {
@@ -32,9 +31,8 @@ SEEDS = {
 # request_models
 # --------------------------------------------------------------------------- #
 def test_seed_requests_lint_clean():
-    published: dict = {}
     for path in SEEDS.values():
-        assert rm.lint_file(path, published) == [], path
+        assert rm.lint_file(path) == [], path
 
 
 def test_tool_id_must_be_version_pinned():
@@ -59,15 +57,10 @@ def test_lint_rejects_dir_table_mismatch(tmp_path):
     p = rm.DATA_MANAGERS_DIR / "motus_db_versioned" / "_probe.yaml"
     p.write_text("tool_id: toolshed.g2.bx.psu.edu/repos/iuc/a/b/1\ndata_tables: [other]\n")
     try:
-        errors = rm.lint_file(p, {})
+        errors = rm.lint_file(p)
     finally:
         p.unlink()
     assert any("directory name" in e for e in errors)
-
-
-def test_lint_rejects_already_published():
-    errors = rm.lint_file(SEEDS["motus"], {"motus_db_versioned": ["3.1.0"]})
-    assert any("already published" in e for e in errors)
 
 
 # --------------------------------------------------------------------------- #
@@ -183,15 +176,6 @@ def test_import_command_assembly():
     ]
 
 
-def test_pending_requests_filters_published():
-    paths = list(SEEDS.values())
-    published = {"motus_db_versioned": ["3.1.0"]}
-    remaining = pr.pending(paths, published)
-    names = {p.parent.name for p in remaining}
-    assert "motus_db_versioned" not in names  # already published -> filtered out
-    assert {"metaphlan_database_versioned", "samestr_db"} <= names
-
-
 # --------------------------------------------------------------------------- #
 # check_data_exists
 # --------------------------------------------------------------------------- #
@@ -227,6 +211,72 @@ def test_request_exists_uses_table_lookup(monkeypatch):
     assert cde.request_exists(req, "mpa_vJan21_CHOCOPhlAnSGB_202103", "http://g")
     monkeypatch.setattr(cde, "fetch_table", lambda url, table: {"fields": []})
     assert not cde.request_exists(req, "mpa_vJan21_CHOCOPhlAnSGB_202103", "http://g")
+
+
+def test_unconfigured_table_is_absent_but_unreachable_galaxy_is_unknown(monkeypatch, capsys):
+    """A 404 means "this Galaxy has no such table" (a definitive no); anything
+    else means we could not ask, which must not pass for "not there"."""
+    req = gb.load_request(SEEDS["metaphlan"])[0]
+
+    monkeypatch.setattr(cde, "fetch_table", lambda url, table: None)  # 404
+    assert not cde.request_exists(req, "mpa_vJan21_CHOCOPhlAnSGB_202103", "http://g")
+    assert "is not configured on" in capsys.readouterr().err
+
+    def _boom(url, table):
+        raise cde.CheckUnavailable(f"{url}/api/tool_data/{table}: timed out")
+
+    monkeypatch.setattr(cde, "fetch_table", _boom)
+    with pytest.raises(cde.CheckUnavailable, match="timed out"):
+        cde.request_exists(req, "mpa_vJan21_CHOCOPhlAnSGB_202103", "http://g")
+
+
+def _candidates(tmp_path, *paths) -> str:
+    f = tmp_path / "candidates.txt"
+    f.write_text("".join(f"{p}\n" for p in paths) + "\n")  # trailing blank line too
+    return str(f)
+
+
+def test_print_new_selects_the_requests_still_needing_a_build(tmp_path, monkeypatch, capsys):
+    """The build stage's only gate: print requests whose data is absent, drop
+    (and report) the ones already present, ignore paths that are not files."""
+    monkeypatch.setattr(
+        cde, "fetch_table", lambda url, table: _MOTUS_TABLE if table == "motus_db_versioned" else {"fields": []}
+    )
+    listing = _candidates(tmp_path, SEEDS["motus"], SEEDS["metaphlan"], tmp_path / "gone.yaml")
+
+    assert cde.main(["--from-file", listing, "--print-new", "--reference-galaxy", "http://g"]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines() == [str(SEEDS["metaphlan"])]  # motus exists, gone.yaml dropped
+    assert "skip motus_db_versioned/3.1.0" in err
+
+
+def test_print_new_on_empty_input_builds_nothing(tmp_path, capsys):
+    assert cde.main(["--from-file", _candidates(tmp_path), "--print-new"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_print_new_fails_rather_than_rebuilding_when_galaxy_cannot_answer(tmp_path, monkeypatch, capsys):
+    """Fail the build step loudly: treating "don't know" as "absent" would
+    rebuild data that already exists (hours of Galaxy compute)."""
+    def _boom(url, table):
+        raise cde.CheckUnavailable(f"{url}/api/tool_data/{table}: [Errno 60] timed out")
+
+    monkeypatch.setattr(cde, "fetch_table", _boom)
+    listing = _candidates(tmp_path, SEEDS["motus"])
+
+    assert cde.main(["--from-file", listing, "--print-new", "--reference-galaxy", "http://g"]) == 1
+    out, err = capsys.readouterr()
+    assert out == ""  # nothing is offered for building
+    assert "cannot tell whether this already exists" in err
+
+
+def test_lint_mode_warns_without_failing(tmp_path, monkeypatch, capsys):
+    """The PR lint is informational: it annotates and still exits 0."""
+    monkeypatch.setattr(cde, "fetch_table", lambda url, table: _MOTUS_TABLE)
+    assert cde.main([str(SEEDS["motus"]), "--warn", "--reference-galaxy", "http://g"]) == 0
+    assert "::warning:: motus_db_versioned/3.1.0 already exists" in capsys.readouterr().err
+    # ... and fails without --warn
+    assert cde.main([str(SEEDS["motus"]), "--reference-galaxy", "http://g"]) == 1
 
 
 class _FakeGi:

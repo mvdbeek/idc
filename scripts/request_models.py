@@ -32,7 +32,6 @@ from pydantic import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_MANAGERS_DIR = REPO_ROOT / "data-managers"
-PUBLISHED_PATH = REPO_ROOT / "published.yml"
 
 # A toolshed GUID looks like:
 #   toolshed.g2.bx.psu.edu/repos/<owner>/<repo>/<tool>/<version>
@@ -100,20 +99,13 @@ def version_id(path: Path) -> str:
     return path.stem
 
 
-def load_published() -> dict[str, list[str]]:
-    if not PUBLISHED_PATH.exists():
-        return {}
-    doc = yaml.safe_load(PUBLISHED_PATH.read_text()) or {}
-    return doc.get("published", {}) or {}
-
-
 def iter_request_files() -> list[Path]:
     if not DATA_MANAGERS_DIR.is_dir():
         return []
     return sorted(p for p in DATA_MANAGERS_DIR.rglob("*.y*ml") if p.is_file())
 
 
-def lint_file(path: Path, published: dict[str, list[str]]) -> list[str]:
+def lint_file(path: Path) -> list[str]:
     """Return a list of error strings for one request file (empty == ok)."""
     errors: list[str] = []
     try:
@@ -134,7 +126,6 @@ def lint_file(path: Path, published: dict[str, list[str]]) -> list[str]:
         return errors
 
     dm = data_manager_name(path)
-    version = version_id(path)
 
     try:
         doc = yaml.safe_load(path.read_text())
@@ -156,12 +147,6 @@ def lint_file(path: Path, published: dict[str, list[str]]) -> list[str]:
             f"the folder must be named after the data manager's primary data table"
         )
 
-    # Already published? Then this request is a no-op / duplicate.
-    if version in published.get(dm, []):
-        errors.append(
-            f"{rel}: version {version!r} is already published for {dm!r} (see published.yml)"
-        )
-
     # Chained builds: the upstream version must itself have a request file, so the
     # generator can build the upstream step of the workflow.
     for up_table, up_version in (req.depends_on or {}).items():
@@ -179,7 +164,6 @@ def lint_file(path: Path, published: dict[str, list[str]]) -> list[str]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    published = load_published()
 
     if argv:
         files = [Path(a).resolve() for a in argv]
@@ -192,7 +176,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     all_errors: list[str] = []
     for path in files:
-        errs = lint_file(path, published)
+        errs = lint_file(path)
         if errs:
             all_errors.extend(errs)
         else:

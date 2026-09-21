@@ -181,8 +181,9 @@ description: SameStr marker database derived from MetaPhlAn mpa_vJan21
 ### What happens to your PR
 
 1. **Lint** (GitHub Actions, on the PR): `scripts/request_models.py` validates the
-   request (version-pinned GUID, folder/table match, `depends_on` resolves, not
-   already in `published.yml`) and gxformat2-validates the workflow it generates.
+   request (version-pinned GUID, folder/table match, `depends_on` resolves) and
+   gxformat2-validates the workflow it generates. `scripts/check_data_exists.py`
+   additionally warns if the requested data already exists (see below).
 2. **Build** (GitHub Actions, on merge to `main`): `scripts/generate_build.py`
    turns the request into a gxformat2 data-manager-bundle workflow, and
    `planemo run` executes it on test.galaxyproject.org into a history named
@@ -213,6 +214,25 @@ performs this check and is used at three points:
 Version matching is heuristic (the identifying column differs per data manager),
 so a request is considered present if its version, any `params` value, or any
 `depends_on` version matches a table entry.
+
+This data-table query is the *only* idempotency signal — there is deliberately no
+in-repo ledger of published versions, since a second source of truth drifts from
+the data tables it is meant to mirror. Three consequences worth knowing:
+
+- **It assumes the reference Galaxy mounts the IDC CVMFS repo.** The check can
+  only recognise IDC's own output once `idc.galaxyproject.org` is in
+  test.galaxyproject.org's `tool_data_table_conf`. If that ever stops being true,
+  the check only ever sees byhand data and requests rebuild on every touch.
+- **Visibility lags a publish.** Stratum-1 replication, the client cache TTL and
+  Galaxy's data-table reload sit between Stage 3 finishing and the new row being
+  queryable. Re-running Stage 2 inside that window rebuilds data that is already
+  on CVMFS; the `record/<data_manager>/<version>` markers still keep the *import*
+  idempotent, so the cost is Galaxy compute, never a duplicate `.loc` row.
+- **A check that cannot be answered fails the step.** A timeout or 5xx is
+  reported as "cannot tell", not as "not present", so a brief outage of the
+  reference Galaxy stops the build rather than silently rebuilding everything. A
+  404 is different: it definitively means the table is not configured there, and
+  is reported as a warning (expected for a brand-new data manager).
 
 For **chained** requests this also avoids redundant upstream work: if the
 upstream database a request `depends_on` already exists in the data table, the
