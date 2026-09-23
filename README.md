@@ -165,12 +165,13 @@ truth if this section ever drifts from them.
 tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy2
 # Data table(s) the data manager populates (required).
 data_tables: [motus_db_versioned]
-# Tool parameters for this build. Each becomes a workflow input (use "|" for
-# nested/conditional params, e.g. "db|build").
+# Tool parameters for this build, nested like the tool form. Each becomes a
+# workflow input.
 params:
   version: "3.1.0"   # the tool's "Database Version" select param
-  # Pin the identifier to usegalaxy.eu's existing entry (the +galaxy2 DM defaults
-  # to db_from_<Zenodo publication date>; override it so idc matches usegalaxy.eu).
+  # The tool's "Database identifier override" text param: the exact `value` it
+  # writes to the data table (and the directory name). Set to the identifier
+  # usegalaxy.eu already has, so workflows built there resolve here unchanged.
   db_value: "db_from_2026-04-27T094930Z"
 # Optional, human-facing provenance:
 description: mOTUs profiler database, version 3.1.0
@@ -228,10 +229,6 @@ tool accepts, ask by its GUID:
 ```bash
 python scripts/tool_schemas.py toolshed.g2.bx.psu.edu/repos/bgruening/data_manager_motus/motus_db_fetcher/3.1.0+galaxy2
 ```
-
-(The tool XML is the fallback if you prefer reading it; Galaxy's own
-`/api/tools/<id>?io_details=true` will not help, because data managers are
-admin-only tools and it returns 401 for anonymous users.)
 
 Editors get the same thing live. Every request file starts with a
 `# yaml-language-server: $schema=...` line pointing at
@@ -323,15 +320,28 @@ The request path therefore carries an assumption: that
 will write. Half of that is enforced — the lint rejects a request whose directory
 name is not one of its own `data_tables`. The other half cannot be, at request
 time: only the data manager knows what `value` it will emit, and several of them
-append a build date (`mpa_vJan21_CHOCOPhlAnSGB_202103-04042023`) or invent an
-identifier of their own (mOTUs writes `db_from_<date>`, which is why that request
-pins `db_value`). The heuristic above absorbs both cases, and a mismatch is
-self-announcing rather than silent: the request would simply never be recognised
-as built. To check the post-condition explicitly once CVMFS has propagated:
+stamp the *download* date into it (`mpa_vJan21_CHOCOPhlAnSGB_202103-04042023`)
+even though the data itself is a fixed release. The heuristic above absorbs that,
+and a mismatch is self-announcing rather than silent: the request would simply
+never be recognised as built. To check the post-condition explicitly once CVMFS
+has propagated:
 
 ```bash
 python scripts/check_data_exists.py --all --expect-exists    # non-zero if a request is missing
 ```
+
+The mOTUs request shows the cure rather than the symptom. Its data manager
+fetches a fixed Zenodo record but used to write `db_from_<download date>`, so
+usegalaxy.eu and idc would have ended up with different identifiers for
+byte-identical data, and a workflow saved on one would not run on the other.
+The current release therefore has a `db_value` parameter that sets the `value`
+explicitly, and the request uses it to write the identifier usegalaxy.eu already
+carries. It is an ordinary tool parameter, passed like any other entry in
+`params`; nothing in the scripts treats it specially. New data managers should
+not need such a knob: the IUC guide on
+[stable data table identifiers](https://galaxy-iuc-standards.readthedocs.io/en/latest/best_practices/data_managers.html#stable-data-table-identifiers)
+now asks for the data's own version in `value` and for install-time provenance
+to stay out of it.
 
 For **chained** requests this also avoids redundant upstream work: if the
 upstream database a request `depends_on` already exists in the data table, the

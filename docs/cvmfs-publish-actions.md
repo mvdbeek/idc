@@ -18,7 +18,8 @@ unchanged as a fallback; both run the same `scripts/import_bundles.py`.
    `publish: false` imports into a CVMFS transaction and then aborts it - a full
    rehearsal that changes nothing on CVMFS.
 4. The job SSHes to the Stratum 0 as the `idc` user, bootstraps a pinned Python
-   with uv, installs `galaxy-maintenance-scripts`, opens a transaction, runs
+   (through a uv release pinned by version and SHA-256), installs
+   `galaxy-maintenance-scripts`, opens a transaction, runs
    `galaxy-import-data-bundle` for every request, records
    `record/<dm>/<version>` and publishes. Already-recorded versions are skipped,
    so re-running is safe.

@@ -53,10 +53,17 @@ USE_DOCKER="$USE_LOCAL_OVERLAYFS"
 # python3 is only 3.9 (too old for galaxy-maintenance-scripts' deps, e.g.
 # yacman>=1.0 which needs 3.10+), and CVMFS-provided Pythons aren't reliably
 # present on every worker, so setup_remote_python() bootstraps a pinned
-# standalone CPython with uv. Set REMOTE_PYTHON in the environment to use a
-# specific interpreter instead and skip the uv bootstrap.
+# standalone CPython with a pinned uv. Set REMOTE_PYTHON in the environment to
+# use a specific interpreter instead and skip the uv bootstrap.
 REMOTE_PYTHON="${REMOTE_PYTHON:-}"
 : "${REMOTE_PYTHON_VERSION:=3.13}"
+# uv release used for the bootstrap, pinned by version *and* tarball SHA-256 so
+# the publish path cannot change underneath us (and cannot be swapped out by
+# whoever controls the download endpoint). Bump both together; the checksum is
+# uv-<target>.tar.gz.sha256 on https://github.com/astral-sh/uv/releases.
+: "${UV_VERSION:=0.12.18}"
+: "${UV_TARGET:=x86_64-unknown-linux-gnu}"
+: "${UV_SHA256:=89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16}"
 REMOTE_WORKDIR_PARENT=/srv/idc
 
 # $EPHEMERIS_API_KEY and $IDC_VAULT_PASS should be set in the environment
@@ -261,11 +268,15 @@ function setup_remote_python() {
         log "Using preset REMOTE_PYTHON=${REMOTE_PYTHON}"
         return
     fi
-    log "Bootstrapping remote Python ${REMOTE_PYTHON_VERSION} with uv"
-    # uv is a single static binary; install it into the (ephemeral) workdir and
-    # let it fetch a managed CPython. UV_INSTALL_DIR sets the binary location;
-    # INSTALLER_NO_MODIFY_PATH keeps it from touching the idc user's profile.
-    exec_on "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR='${REMOTE_WORKDIR}/uv' INSTALLER_NO_MODIFY_PATH=1 sh"
+    log "Bootstrapping remote Python ${REMOTE_PYTHON_VERSION} with uv ${UV_VERSION}"
+    # uv is a single static binary. Fetch the pinned release tarball straight
+    # from GitHub, refuse it unless it matches the pinned checksum, and unpack it
+    # into the (ephemeral) workdir - no curl | sh, nothing touches the idc user's
+    # profile, and the same bytes run every time until UV_VERSION/UV_SHA256 are
+    # bumped together.
+    local tarball="uv-${UV_TARGET}.tar.gz"
+    local url="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${tarball}"
+    exec_on "set -e; cd '${REMOTE_WORKDIR}' && curl -LsSf -o '${tarball}' '${url}' && echo '${UV_SHA256}  ${tarball}' | sha256sum -c - && mkdir -p uv && tar -xzf '${tarball}' -C uv --strip-components=1 && rm -f '${tarball}'"
     local uv="${REMOTE_WORKDIR}/uv/uv"
     exec_on "$uv" python install "$REMOTE_PYTHON_VERSION"
     REMOTE_PYTHON="$(exec_on "$uv" python find "$REMOTE_PYTHON_VERSION")"

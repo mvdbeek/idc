@@ -6,7 +6,8 @@ data_tables:
   - motus_db_versioned
 params:
   version: "3.1.0"   # the tool's "Database Version" select param
-  # Pin the identifier to usegalaxy.eu's existing entry (the +galaxy2 DM defaults
-  # to db_from_<Zenodo publication date>; override it so idc matches usegalaxy.eu).
+  # "Database identifier override": the exact `value` the tool writes to the data
+  # table. Set to usegalaxy.eu's existing identifier so workflows built there
+  # resolve here unchanged (left empty, the tool would stamp today's date).
   db_value: "db_from_2026-04-27T094930Z"
 description: mOTUs profiler database, version 3.1.0
