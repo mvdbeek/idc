@@ -53,17 +53,16 @@ USE_DOCKER="$USE_LOCAL_OVERLAYFS"
 # python3 is only 3.9 (too old for galaxy-maintenance-scripts' deps, e.g.
 # yacman>=1.0 which needs 3.10+), and CVMFS-provided Pythons aren't reliably
 # present on every worker, so setup_remote_python() bootstraps a pinned
-# standalone CPython with a pinned uv. Set REMOTE_PYTHON in the environment to
-# use a specific interpreter instead and skip the uv bootstrap.
-REMOTE_PYTHON="${REMOTE_PYTHON:-}"
-: "${REMOTE_PYTHON_VERSION:=3.13}"
-# uv release used for the bootstrap, pinned by version *and* tarball SHA-256 so
-# the publish path cannot change underneath us (and cannot be swapped out by
-# whoever controls the download endpoint). Bump both together; the checksum is
-# uv-<target>.tar.gz.sha256 on https://github.com/astral-sh/uv/releases.
-: "${UV_VERSION:=0.12.18}"
-: "${UV_TARGET:=x86_64-unknown-linux-gnu}"
-: "${UV_SHA256:=89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16}"
+# standalone CPython with a pinned uv. Everything below is fixed on purpose (no
+# environment overrides): the publish path must run the same bytes every time
+# until someone changes these lines in a reviewed commit.
+REMOTE_PYTHON=   # set by setup_remote_python()
+REMOTE_PYTHON_VERSION=3.13
+# uv release, pinned by version *and* tarball SHA-256. Bump both together; the
+# checksum is uv-<target>.tar.gz.sha256 on https://github.com/astral-sh/uv/releases.
+UV_VERSION=0.12.18
+UV_TARGET=x86_64-unknown-linux-gnu
+UV_SHA256=89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16
 REMOTE_WORKDIR_PARENT=/srv/idc
 
 # $EPHEMERIS_API_KEY and $IDC_VAULT_PASS should be set in the environment
@@ -263,11 +262,6 @@ function setup_remote_python() {
     # Sets global $REMOTE_PYTHON to a pinned standalone CPython bootstrapped with
     # uv, so the remote venvs don't depend on the host OS Python (too old) or on
     # a CVMFS-provided Python being mounted on this particular worker/Stratum 0.
-    # Honor an explicit REMOTE_PYTHON from the environment and skip the bootstrap.
-    if [ -n "$REMOTE_PYTHON" ]; then
-        log "Using preset REMOTE_PYTHON=${REMOTE_PYTHON}"
-        return
-    fi
     log "Bootstrapping remote Python ${REMOTE_PYTHON_VERSION} with uv ${UV_VERSION}"
     # uv is a single static binary. Fetch the pinned release tarball straight
     # from GitHub, refuse it unless it matches the pinned checksum, and unpack it
